@@ -1,11 +1,16 @@
--- ShopService.lua  |  central entry for all coin-based shop purchases
-
+--------------------------------------------------------------------
+-- ShopService.lua  |  central entry for all coin-based shop purchases (Optimized)
+-- • Now uses require() for BoostService, removing _G dependency.
+-- • Handles all purchases made with the in-game "Coin" currency.
+--------------------------------------------------------------------
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 local Players            = game:GetService("Players")
 
-local ShopItems     = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("ShopItems"))
-local DataAPI        = require(game.ServerScriptService.PlayerDataManager)
-local BoostService   = _G.BoostService       -- becomes non-nil after BoostService.lua loads
+-- Service Modules
+local DataAPI       = require(ServerScriptService.PlayerDataManager)
+local BoostService  = require(ServerScriptService.BoostService) -- Correctly require the module
+local ShopItems     = require(ReplicatedStorage.Config.ShopItems)
 
 -- Remote from the UI (ShopController)
 local Remotes   = ReplicatedStorage:WaitForChild("Remotes")
@@ -13,75 +18,82 @@ local BuyItem   = Remotes:FindFirstChild("BuyItem") or Instance.new("RemoteFunct
 BuyItem.Name    = "BuyItem"
 
 --------------------------------------------------------------------
--- ?  fast lookup tables  ?
+-- Fast lookup tables for shop items
 --------------------------------------------------------------------
-local cosmeticsByName = {}      -- [itemName] = itemInfo
+local cosmeticsByName = {}
 for _, item in ipairs(ShopItems.Cosmetics or {}) do
 	cosmeticsByName[item.Name] = item
 end
 
-local boostsByName = {}         -- optional coin-priced boosts
+local boostsByName = {}
 for _, item in ipairs(ShopItems.Boosts or {}) do
+	-- Only include boosts that can be bought with coins
 	if item.Price and not item.ProductId then
 		boostsByName[item.BoostName] = item
 	end
 end
 
 --------------------------------------------------------------------
--- ?  helpers  ?
+-- Helper Functions
 --------------------------------------------------------------------
-local function updateCoinsLeaderstat(player, newAmount)
-	local stats = player:FindFirstChild("leaderstats")
-	if stats and stats:FindFirstChild("Coins") then
-		stats.Coins.Value = newAmount
-	end
-end
-
 local function chargeCoins(player, price)
 	local data = DataAPI.Get(player)
-	if not data or (data.Coins or 0) < price then return false end
-	data.Coins -= price
-	updateCoinsLeaderstat(player, data.Coins)
+	if not data or (data.Coins or 0) < price then
+		return false -- Not enough coins
+	end
+
+	DataAPI.AddCoins(player, -price) -- Use the AddCoins helper to subtract
 	return true
 end
 
 --------------------------------------------------------------------
--- ?  main handler  ?
+-- Main Purchase Handler
 --------------------------------------------------------------------
-BuyItem.OnServerInvoke = function(player, tab, itemName)
-	if not player or not tab or not itemName then return false end
+BuyItem.OnServerInvoke = function(player, tab: string, itemName: string)
+	if not (player and tab and itemName) then return false end
+
 	local data = DataAPI.Get(player)
 	if not data then return false end
 
-	-- COSMETICS
+	-- Handle Cosmetic Purchases
 	if tab == "Cosmetics" then
-		local info = cosmeticsByName[itemName]
-		if not info then return false end
-		if not chargeCoins(player, info.Price) then return false end
+		local itemInfo = cosmeticsByName[itemName]
+		if not (itemInfo and itemInfo.Price) then return false end
 
-		data.OwnedCosmetics[info.Tab] = data.OwnedCosmetics[info.Tab] or {}
-		for _, v in ipairs(data.OwnedCosmetics[info.Tab]) do
-			if v == itemName then return true end -- already owned
+		-- Check if already owned
+		local ownedCosmetics = data.OwnedCosmetics or {}
+		local ownedCategory = ownedCosmetics[itemInfo.Tab] or {}
+		if table.find(ownedCategory, itemName) then
+			return true -- Already owned, count as success
 		end
-		table.insert(data.OwnedCosmetics[info.Tab], itemName)
-		DataAPI.Save(player)
+
+		if not chargeCoins(player, itemInfo.Price) then
+			return false -- Failed to charge coins
+		end
+
+		table.insert(ownedCategory, itemName)
+		data.OwnedCosmetics[itemInfo.Tab] = ownedCategory
+		DataAPI.Set(player, "OwnedCosmetics", data.OwnedCosmetics) -- Mark for saving
 
 		return true
 	end
 
-	-- BOOSTS
+	-- Handle Coin-Priced Boost Purchases
 	if tab == "Boosts" then
-		local info = boostsByName[itemName]
-		if not info then return false end
-		if not chargeCoins(player, info.Price) then return false end
+		local itemInfo = boostsByName[itemName]
+		if not (itemInfo and itemInfo.Price) then return false end
 
-		if BoostService and BoostService.Activate then
-			BoostService.Activate(player, itemName, info.Duration)
+		if not chargeCoins(player, itemInfo.Price) then
+			return false -- Failed to charge coins
 		end
+
+		-- Activate the boost using the required module
+		if BoostService then
+			BoostService.Activate(player, itemInfo.BoostName, itemInfo.Duration)
+		end
+
 		return true
 	end
 
 	return false
 end
-
-
