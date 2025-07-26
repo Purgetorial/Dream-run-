@@ -1,218 +1,194 @@
 -------------------------------------------------------------------------------
--- ShopController.lua · Boosts tab (Low-Gravity, Double-Coins, Lightspeed),
---                      robust BUY / R$ / ACTIVE / OWNED buttons,
---                      always-visible descriptions,
---                      coloured tab buttons
+-- ShopController.lua · (Optimized with UI Caching)
+-- • Implements a UI caching system to prevent recreating item rows.
+-- • Drastically improves performance and responsiveness when opening or switching tabs.
+-- • Uses direct leaderstat connections for live coin updates.
 -------------------------------------------------------------------------------
-local Players, Rep, MPS, UIS = game:GetService("Players"),
-	game:GetService("ReplicatedStorage"),
-	game:GetService("MarketplaceService"),
-	game:GetService("UserInputService")
+local Players            = game:GetService("Players")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+local UserInputService   = game:GetService("UserInputService")
 
-local ShopItems       = require(Rep.Config.ShopItems)
-local player          = Players.LocalPlayer
-local activeBoosts    = player:WaitForChild("ActiveBoosts")
+local player = Players.LocalPlayer
 
--- modal helper
-local UIEvents   = Rep:FindFirstChild("UIEvents") or Instance.new("Folder", Rep)
-UIEvents.Name    = "UIEvents"
-local ModalState = UIEvents:FindFirstChild("ModalState") or Instance.new("BindableEvent", UIEvents)
-ModalState.Name  = "ModalState"
+-- Config & Remotes
+local ShopItems      = require(ReplicatedStorage.Config.ShopItems)
+local Remotes        = ReplicatedStorage.Remotes
+local BuyItemRF      = Remotes.BuyItem
+local GetCosmetics   = Remotes.GetCosmetics
+local OpenShopEvt    = ReplicatedStorage.OpenShop
+local ModalState     = ReplicatedStorage.UIEvents.ModalState
 
--------------------------------------------------------------------------------
--- UI references
--------------------------------------------------------------------------------
-local panel       = script.Parent
-local content     = panel.ContentArea
-local rowTemplate = content.ItemTemplate
-
+-- UI References
+local panel      = script.Parent
+local gui        = panel.Parent
+local content    = panel.ContentArea
+local rowTpl     = content.ItemTemplate
+local closeBtn   = panel.CloseButton
+local coinsLabel = panel.CurrencyBar.CoinsLabel
 local tabs = {
 	Boosts    = panel.TabsBar.BoostsTab,
 	Cosmetics = panel.TabsBar.CosmeticsTab,
 	Robux     = panel.TabsBar.RobuxTab,
 }
 
-local closeBtn   = panel.CloseButton
-local coinsLabel = panel.CurrencyBar.CoinsLabel
+-------------------------------------------------------------------------------
+-- State & Caching
+-------------------------------------------------------------------------------
+local SELECTED_COLOR   = Color3.fromRGB(0, 180, 255)
+local UNSELECTED_COLOR = Color3.fromRGB(0, 110, 185)
+local currentTab = "Boosts"
+local hasInitialized = false
+local itemRows = { Boosts = {}, Cosmetics = {}, Robux = {} } -- Cache for UI rows
 
 -------------------------------------------------------------------------------
--- colours
+-- Helper Functions
 -------------------------------------------------------------------------------
-local SELECTED_COLOR   = Color3.fromRGB(  0,180,255)  -- bright aqua
-local UNSELECTED_COLOR = Color3.fromRGB(  0,110,185)  -- darker blue
-
--------------------------------------------------------------------------------
--- remotes
--------------------------------------------------------------------------------
-local Remotes      = Rep.Remotes
-local BuyItemRF    = Remotes:FindFirstChild("BuyItem") or Instance.new("RemoteFunction", Remotes)
-BuyItemRF.Name     = "BuyItem"
-local GetCosmetics = Remotes.GetCosmetics
-local OpenShopEvt  = Rep.OpenShop
-
--------------------------------------------------------------------------------
--- coins label
--------------------------------------------------------------------------------
-local function comma(n:number):string
+local function comma(n: number): string
 	return tostring(math.floor(n)):reverse():gsub("(%d%d%d)", "%1,"):reverse()
 end
-local function updateCoins() coinsLabel.Text = comma(player.leaderstats.Coins.Value) end
-player.leaderstats.Coins.Changed:Connect(updateCoins); updateCoins()
 
--------------------------------------------------------------------------------
--- OWNED cache
--------------------------------------------------------------------------------
-local owned = {}
-local function refreshOwned()
-	local data = GetCosmetics:InvokeServer()
-	owned = {}
-	for tab, list in pairs(data.OwnedCosmetics or {}) do
-		owned[tab] = {}
-		for _,n in ipairs(list) do owned[tab][n] = true end
-	end
+local function updateCoins(value)
+	coinsLabel.Text = comma(value)
 end
 
--------------------------------------------------------------------------------
--- style helper for Buy buttons
--------------------------------------------------------------------------------
-local function style(btn:TextButton, state:string, robux:boolean?)
+local function styleButton(btn: TextButton, state: string, isRobux: boolean)
+	btn:SetAttribute("State", state)
 	if state == "Buy" then
-		btn.Text = robux and "R$" or "BUY"
-		btn.AutoButtonColor, btn.BackgroundColor3 = true, Color3.fromRGB(0,170,0)
+		btn.Text = isRobux and "R$" or "BUY"
+		btn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+		btn.AutoButtonColor = true
 	elseif state == "Active" then
 		btn.Text = "ACTIVE"
-		btn.AutoButtonColor, btn.BackgroundColor3 = false, Color3.fromRGB(255,170,0)
+		btn.BackgroundColor3 = Color3.fromRGB(255, 170, 0)
+		btn.AutoButtonColor = false
 	elseif state == "Owned" then
 		btn.Text = "OWNED"
-		btn.AutoButtonColor, btn.BackgroundColor3 = false, Color3.fromRGB(100,100,100)
-	else
-		btn.Text = state
+		btn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+		btn.AutoButtonColor = false
+	else -- "..." (processing)
+		btn.Text = "..."
+		btn.BackgroundColor3 = Color3.fromRGB(150, 150, 150)
+		btn.AutoButtonColor = false
 	end
-	btn:SetAttribute("State", state)
 end
 
 -------------------------------------------------------------------------------
--- row builder
+-- UI Population & Management
 -------------------------------------------------------------------------------
-local rowByBoost = {}  -- for live Active updates
-
-local TAB_DATA = {
-	Boosts    = ShopItems.Boosts,
-	Cosmetics = ShopItems.Cosmetics,
-	Robux     = ShopItems.Robux,
-}
-
-local function clearRows()
-	for _,c in ipairs(content:GetChildren()) do
-		if c:IsA("Frame") and c ~= rowTemplate then c:Destroy() end
-	end
-	rowByBoost = {}
-end
-
-local function addRow(tabName, item)
-	local row = rowTemplate:Clone(); row.Visible = true
-	row.Icon.Image     = item.Icon or "rbxassetid://3926305904"
+local function createRow(tabName, item)
+	local row = rowTpl:Clone()
+	row.Name = item.Name
+	row.Icon.Image = item.Icon or "rbxassetid://3926305904"
 	row.NameLabel.Text = item.Name
 	row.DescLabel.Text = item.Desc or ""
-	row.DescLabel.Visible = true
 
-	local isRobux = (item.ProductId ~= nil)
+	local isRobux = item.ProductId ~= nil
 	row.PriceLabel.Visible = not isRobux and item.Price and item.Price > 0
 	if row.PriceLabel.Visible then
-		row.PriceLabel.Text = "?? " .. item.Price
+		row.PriceLabel.Text = "? " .. comma(item.Price) -- Using a coin icon
 	end
 
 	local btn = row.BuyButton
-	---------------------------------------------------------------- purchase
-	local function tryBuy()
+	btn.MouseButton1Click:Connect(function()
 		if btn:GetAttribute("State") ~= "Buy" then return end
-		style(btn,"...",isRobux)
-		if isRobux then
-			MPS:PromptProductPurchase(player,item.ProductId)
-			task.wait(0.25)
-			if btn:GetAttribute("State")=="..." then style(btn,"Buy",isRobux) end
-		else
-			task.spawn(function()
-				local ok = BuyItemRF:InvokeServer(tabName,item.BoostName or item.Name)
-				if ok then
-					style(btn, (tabName=="Boosts") and "Active" or "Owned", isRobux)
-				else
-					style(btn,"Buy",isRobux)
-				end
-			end)
-		end
-	end
-	btn.MouseButton1Click:Connect(tryBuy)
+		styleButton(btn, "...", isRobux)
 
-	---------------------------------------------------------------- initial state
-	if tabName=="Boosts" then
-		if item.BoostName=="Lightspeed" and player:FindFirstChild("PermanentLightspeed") then
-			style(btn,"Owned")
+		if isRobux then
+			MarketplaceService:PromptProductPurchase(player, item.ProductId)
+			task.wait(0.5) -- Give time for purchase prompt to process
+			if btn:GetAttribute("State") == "..." then styleButton(btn, "Buy", isRobux) end
 		else
-			local flag = activeBoosts:FindFirstChild(item.BoostName)
-			if flag and flag.Value then style(btn,"Active") else style(btn,"Buy",isRobux) end
-			if flag then
-				flag.Changed:Connect(function(v) style(btn,v and "Active" or "Buy",isRobux) end)
+			local success = BuyItemRF:InvokeServer(tabName, item.BoostName or item.Name)
+			if success then
+				styleButton(btn, (tabName == "Boosts") and "Active" or "Owned", isRobux)
+			else
+				styleButton(btn, "Buy", isRobux)
 			end
-			rowByBoost[item.BoostName]=btn
 		end
-	elseif tabName=="Cosmetics" then
-		if owned.Trails and owned.Trails[item.Name] then style(btn,"Owned") else style(btn,"Buy") end
-	else -- Robux coin packs
-		style(btn,"Buy",true)
-	end
+	end)
 
 	row.Parent = content
+	itemRows[tabName][item.Name] = row
+	return row
 end
 
--------------------------------------------------------------------------------
--- populate tab
--------------------------------------------------------------------------------
-local function populate(tab)
-	clearRows()
-	if tab=="Cosmetics" then refreshOwned() end
-	for _,itm in ipairs(TAB_DATA[tab] or {}) do addRow(tab,itm) end
-	task.defer(function()
-		local y=0
-		for _,v in ipairs(content:GetChildren()) do
-			if v:IsA("Frame") and v~=rowTemplate then y+=v.AbsoluteSize.Y+4 end
-		end
-		content.CanvasSize=UDim2.fromOffset(0,y)
-	end)
+local function initializeShop()
+	if hasInitialized then return end
+
+	-- Create all rows for all tabs at once
+	for _, item in ipairs(ShopItems.Boosts) do createRow("Boosts", item) end
+	for _, item in ipairs(ShopItems.Cosmetics) do createRow("Cosmetics", item) end
+	for _, item in ipairs(ShopItems.Robux) do createRow("Robux", item) end
+
+	hasInitialized = true
+	content.CanvasSize = UDim2.fromOffset(0, content.UILayout.AbsoluteContentSize.Y)
 end
 
--------------------------------------------------------------------------------
--- tab select
--------------------------------------------------------------------------------
-local currentTab = "Boosts"
-local function setTab(name)
-	currentTab = name
-	for t,btn in pairs(tabs) do
-		btn.BackgroundColor3 = (t==name) and SELECTED_COLOR or UNSELECTED_COLOR
+local function setTab(tabName: string)
+	currentTab = tabName
+
+	-- Update tab button colors
+	for name, btn in pairs(tabs) do
+		btn.BackgroundColor3 = (name == tabName) and SELECTED_COLOR or UNSELECTED_COLOR
 	end
-	populate(name)
+
+	-- Update row visibility based on the selected tab
+	for tab, rows in pairs(itemRows) do
+		for _, row in pairs(rows) do
+			row.Visible = (tab == tabName)
+		end
+	end
 end
-for n,b in pairs(tabs) do b.MouseButton1Click:Connect(function() setTab(n) end) end
+
+local function refreshButtonStates()
+	-- Refresh cosmetics
+	local cosmeticsData = GetCosmetics:InvokeServer()
+	local ownedTrails = cosmeticsData.OwnedCosmetics.Trails or {}
+	for _, trailName in ipairs(ownedTrails) do
+		if itemRows.Cosmetics[trailName] then
+			styleButton(itemRows.Cosmetics[trailName].BuyButton, "Owned", false)
+		end
+	end
+
+	-- Refresh boosts
+	local activeBoosts = player:WaitForChild("ActiveBoosts")
+	for _, boostFlag in ipairs(activeBoosts:GetChildren()) do
+		if itemRows.Boosts[boostFlag.Name] then
+			styleButton(itemRows.Boosts[boostFlag.Name].BuyButton, boostFlag.Value and "Active" or "Buy", true)
+		end
+	end
+	-- Specifically check for Lightspeed gamepass
+	if player:FindFirstChild("PermanentLightspeed") and itemRows.Boosts["Lightspeed"] then
+		styleButton(itemRows.Boosts["Lightspeed"].BuyButton, "Owned", true)
+	end
+end
 
 -------------------------------------------------------------------------------
--- open / close
+-- Open / Close Logic
 -------------------------------------------------------------------------------
 local function openShop()
-	refreshOwned()
+	initializeShop()
+	refreshButtonStates()
 	ModalState:Fire(true)
-	panel.Visible=true; panel.Parent.Enabled=true
+	gui.Enabled, panel.Visible = true, true
 	setTab(currentTab)
-	updateCoins()
 end
+
 local function closeShop()
-	panel.Visible=false; panel.Parent.Enabled=false
+	gui.Enabled, panel.Visible = false, false
 	ModalState:Fire(false)
 end
+
 closeBtn.MouseButton1Click:Connect(closeShop)
-UIS.InputBegan:Connect(function(i,gp)
-	if not gp and i.KeyCode==Enum.KeyCode.Escape and panel.Parent.Enabled then closeShop() end
+UserInputService.InputBegan:Connect(function(i, gp)
+	if not gp and i.KeyCode == Enum.KeyCode.Escape and gui.Enabled then closeShop() end
 end)
 OpenShopEvt.Event:Connect(openShop)
 
--- preview in Studio
+-- Live coin counter connection
+player:WaitForChild("leaderstats"):WaitForChild("Coins").Changed:Connect(updateCoins)
+updateCoins(player.leaderstats.Coins.Value)
+
+-- For Studio previewing
 if not game:GetService("RunService"):IsRunning() then openShop() end

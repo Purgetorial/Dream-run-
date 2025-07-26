@@ -1,49 +1,68 @@
 --------------------------------------------------------------------
--- ProductService.lua · handles ALL Developer Products / Game-passes
+-- ProductService.lua · handles ALL Developer Products / Game-passes (Optimized)
+-- • Now uses require() for BoostService, removing the final _G dependency.
+-- • Handles all Robux-based purchases.
 --------------------------------------------------------------------
-local MPS     = game:GetService("MarketplaceService")
-local Players = game:GetService("Players")
-local Rep     = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
+local Players            = game:GetService("Players")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
-local DataAPI      = require(game.ServerScriptService.PlayerDataManager)
-local BoostService = _G.BoostService
-local ShopItems    = require(Rep:WaitForChild("Config"):WaitForChild("ShopItems"))
+-- Service Modules
+local DataAPI      = require(ServerScriptService.PlayerDataManager)
+local BoostService = require(ServerScriptService.BoostService) -- Correctly require the module
+local ShopItems    = require(ReplicatedStorage.Config.ShopItems)
 
---------------------------------------------------------------------  BUILD LOOKUPS
-local COIN_PACKS = {}   -- [productId] = amount
-local BOOSTS     = {}   -- [productId] = true   (handled by BoostService)
+--------------------------------------------------------------------
+-- Build Fast-Lookup Tables
+--------------------------------------------------------------------
+local COIN_PACKS = {}   -- [productId] = coinAmount
+local BOOST_PRODUCTS = {}   -- [productId] = true
 
-for _, item in ipairs(ShopItems.Robux) do
-	if item.Reward == "Boost" then
-		BOOSTS[item.ProductId] = true
-	elseif typeof(item.Reward)=="number" then
+-- Process Robux-purchasable boosts (Developer Products and Game Passes)
+for _, item in ipairs(ShopItems.Boosts or {}) do
+	if item.ProductId then
+		BOOST_PRODUCTS[item.ProductId] = true
+	end
+end
+
+-- Process coin packs
+for _, item in ipairs(ShopItems.Robux or {}) do
+	if item.ProductId and typeof(item.Reward) == "number" then
 		COIN_PACKS[item.ProductId] = item.Reward
 	end
 end
 
---------------------------------------------------------------------  RECEIPT
-MPS.ProcessReceipt = function(receiptInfo)
-	local pl = Players:GetPlayerByUserId(receiptInfo.PlayerId)
-	if not pl then return Enum.ProductPurchaseDecision.NotProcessedYet end
-
-	-- Coin packs
-	local coins = COIN_PACKS[receiptInfo.ProductId]
-	if coins then
-		local data = DataAPI.Get(pl)
-		if data then
-			data.Coins += coins
-			local ls = pl:FindFirstChild("leaderstats")
-			if ls and ls:FindFirstChild("Coins") then ls.Coins.Value = data.Coins end
-		end
-		return Enum.ProductPurchaseDecision.PurchaseGranted
+--------------------------------------------------------------------
+-- Purchase Receipt Handler
+--------------------------------------------------------------------
+MarketplaceService.ProcessReceipt = function(receiptInfo)
+	local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
+	if not player then
+		-- Player might have left. Not an error, but we can't process it.
+		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
-	-- Boosts / Game-passes
-	if BOOSTS[receiptInfo.ProductId] and BoostService and BoostService._grantGamePass then
-		if BoostService._grantGamePass(pl, receiptInfo.ProductId) then
+	local productId = receiptInfo.ProductId
+
+	-- Handle Coin Pack Purchases
+	local coinAmount = COIN_PACKS[productId]
+	if coinAmount then
+		local data = DataAPI.Get(player)
+		if data then
+			DataAPI.AddCoins(player, coinAmount)
 			return Enum.ProductPurchaseDecision.PurchaseGranted
 		end
 	end
 
+	-- Handle Boost / Game-Pass Purchases
+	if BOOST_PRODUCTS[productId] then
+		if BoostService and BoostService.GrantFromPurchase(player, productId) then
+			return Enum.ProductPurchaseDecision.PurchaseGranted
+		end
+	end
+
+	-- If we reach here, the product ID wasn't found in our lookups.
+	-- This is important to prevent processing purchases not related to our game.
 	return Enum.ProductPurchaseDecision.NotProcessedYet
 end

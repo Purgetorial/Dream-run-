@@ -1,108 +1,152 @@
 --------------------------------------------------------------------
--- CosmeticsController.lua  |  Trails list + equip / recolour UX
+-- CosmeticsController.lua | Trails list + equip / recolor UX (Optimized)
+-- • Implements UI caching to eliminate lag when opening the menu.
+-- • Simplifies state management for equipping/unequipping trails.
+-- • Fetches cosmetic data more efficiently.
 --------------------------------------------------------------------
 local Players            = game:GetService("Players")
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
-local UIS                = game:GetService("UserInputService")
+local UserInputService   = game:GetService("UserInputService")
 
-local Remotes        = ReplicatedStorage.Remotes
-local GetCosmetics   = Remotes.GetCosmetics
-local EquipCosmetic  = Remotes.EquipCosmetic
-local UnequipCosmetic= Remotes.UnequipCosmetic
-local SetTrailColor  = Remotes.SetTrailColor
+local player = Players.LocalPlayer
 
-local ModalState     = ReplicatedStorage.UIEvents.ModalState
-local OpenCosmetics  = ReplicatedStorage.OpenCosmetics
+-- Remotes & Config
+local Remotes         = ReplicatedStorage.Remotes
+local GetCosmetics    = Remotes.GetCosmetics
+local EquipCosmetic   = Remotes.EquipCosmetic
+local UnequipCosmetic = Remotes.UnequipCosmetic
+local ModalState      = ReplicatedStorage.UIEvents.ModalState
+local OpenCosmetics   = ReplicatedStorage.OpenCosmetics
+local ShopItems       = require(ReplicatedStorage.Config.ShopItems)
 
-local ShopItems  = require(ReplicatedStorage.Config.ShopItems)
-local TrailColours = require(ReplicatedStorage.Config.TrailColors)
+-- UI Refs
+local panel     = script.Parent
+local gui       = panel.Parent
+local content   = panel.ContentArea
+local rowTpl    = content.RowTemplate
+local closeBtn  = panel.CloseButton
 
---------------------------------------------------------------------  UI refs
-local panel    = script.Parent
-local gui      = panel.Parent
-local content  = panel.ContentArea
-local rowTpl   = content.RowTemplate
-local closeBtn = panel.CloseButton
+--------------------------------------------------------------------
+-- State & Caching
+--------------------------------------------------------------------
+local hasInitialized = false
+local equippedTrail = ""
+local itemRows = {} -- Cache for UI rows [trailName] = row
 
---------------------------------------------------------------------  Build meta table once
-local TrailMeta = {}
-for _, it in ipairs(ShopItems.Cosmetics or {}) do TrailMeta[it.Name] = it end
-
---------------------------------------------------------------------  Local state
-local player   = Players.LocalPlayer
-local equipped = ""  -- current equipped trail name
-
---------------------------------------------------------------------  Helpers
-local function style(btn, isEq)
-	btn.Text            = isEq and "Equipped" or "Equip"
-	btn.BackgroundColor3= isEq and Color3.fromRGB(0,200,0) or Color3.fromRGB(0,170,0)
-	btn.AutoButtonColor = not isEq
-end
-
-local function clearRows()
-	for _,c in ipairs(content:GetChildren()) do
-		if c:IsA("Frame") and c ~= rowTpl then c:Destroy() end
+--------------------------------------------------------------------
+-- Helper Functions
+--------------------------------------------------------------------
+local function styleButton(btn: TextButton, isEquipped: boolean)
+	if isEquipped then
+		btn.Text = "EQUIPPED"
+		btn.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+		btn.AutoButtonColor = false
+	else
+		btn.Text = "EQUIP"
+		btn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+		btn.AutoButtonColor = true
 	end
 end
 
-local function recolor(seq) SetTrailColor:FireServer(seq) end  -- fallback
+-- Refreshes the state of all buttons in the list
+local function refreshAllButtonStyles()
+	for trailName, row in pairs(itemRows) do
+		styleButton(row.EquipButton, trailName == equippedTrail)
+	end
+end
 
-local function addRow(name:string, isEq:boolean)
-	local meta = TrailMeta[name] or {}
-	local f = rowTpl:Clone(); f.Visible = true
+--------------------------------------------------------------------
+-- UI Population & Management
+--------------------------------------------------------------------
+local function createRow(item)
+	local row = rowTpl:Clone()
+	row.Name = item.Name
+	row.NameLabel.Text = item.Name
+	row.DescLabel.Text = item.Desc or ""
+	if item.Icon then row.Icon.Image = item.Icon end
 
-	f.NameLabel.Text = name
-	f.DescLabel.Text = meta.Desc or ""
-	if meta.Icon then f.Icon.Image = meta.Icon end
-
-	local btn = f.EquipButton
-	style(btn, isEq)
-
+	local btn = row.EquipButton
 	btn.MouseButton1Click:Connect(function()
-		if equipped == name then
+		-- Prevent spamming
+		if not btn.AutoButtonColor then return end
+
+		if equippedTrail == item.Name then
+			-- Unequip current trail
 			UnequipCosmetic:FireServer("Trails")
-			equipped = ""
+			equippedTrail = ""
 		else
-			EquipCosmetic:FireServer("Trails", name)
-			equipped = name
+			-- Equip new trail
+			EquipCosmetic:FireServer("Trails", item.Name)
+			equippedTrail = item.Name
 		end
-		for _, row in ipairs(content:GetChildren()) do
-			if row:IsA("Frame") and row ~= rowTpl then
-				style(row.EquipButton, row.NameLabel.Text == equipped)
-			end
-		end
+		-- Immediately update UI for responsiveness
+		refreshAllButtonStyles()
 	end)
 
-	f.Parent = content
+	row.Parent = content
+	itemRows[item.Name] = row
 end
 
-local function populate()
-	clearRows()
-	local data      = GetCosmetics:InvokeServer()
-	local owned     = data.OwnedCosmetics.Trails or {}
-	equipped        = data.EquippedCosmetics.Trails or ""
+local function initializeCosmetics()
+	if hasInitialized then return end
 
-	for _, trail in ipairs(owned) do
-		addRow(trail, trail == equipped)
+	-- Create rows for all cosmetic items once
+	for _, itemData in ipairs(ShopItems.Cosmetics) do
+		createRow(itemData)
 	end
+
+	hasInitialized = true
+	content.CanvasSize = UDim2.fromOffset(0, content.UILayout.AbsoluteContentSize.Y)
 end
 
---------------------------------------------------------------------  Remote echo (so UI updates when server confirms equip)
-EquipCosmetic.OnClientEvent:Connect(function(_, tab, name)
-	if tab ~= "Trails" then return end
-	equipped = name
-	populate()
-end)
-UnequipCosmetic.OnClientEvent:Connect(function(_, tab)
-	if tab == "Trails" then equipped = ""; populate() end
-end)
+local function refreshPanel()
+	local data = GetCosmetics:InvokeServer()
+	local owned = data.OwnedCosmetics.Trails or {}
+	equippedTrail = data.EquippedCosmetics.Trails or ""
 
---------------------------------------------------------------------  Open / Close
-local function open()  ModalState:Fire(true); populate(); gui.Enabled = true; panel.Visible = true end
-local function close() ModalState:Fire(false); gui.Enabled = false; panel.Visible = false end
+	-- Set visibility based on ownership
+	for name, row in pairs(itemRows) do
+		row.Visible = table.find(owned, name) ~= nil
+	end
+
+	refreshAllButtonStyles()
+end
+
+--------------------------------------------------------------------
+-- Open / Close Logic
+--------------------------------------------------------------------
+local function open()
+	initializeCosmetics()
+	refreshPanel()
+	ModalState:Fire(true)
+	gui.Enabled, panel.Visible = true, true
+end
+
+local function close()
+	gui.Enabled, panel.Visible = false, false
+	ModalState:Fire(false)
+end
 
 closeBtn.MouseButton1Click:Connect(close)
-UIS.InputBegan:Connect(function(i,gp) if not gp and i.KeyCode==Enum.KeyCode.Escape and gui.Enabled then close() end end)
+UserInputService.InputBegan:Connect(function(i, gp)
+	if not gp and i.KeyCode == Enum.KeyCode.Escape and gui.Enabled then close() end
+end)
 OpenCosmetics.Event:Connect(open)
 
-if not game:GetService("RunService"):IsRunning() then open() end  -- Studio preview
+-- Server echo handlers to confirm equip/unequip
+EquipCosmetic.OnClientEvent:Connect(function(_, tab, name)
+	if tab == "Trails" then
+		equippedTrail = name
+		refreshAllButtonStyles()
+	end
+end)
+
+UnequipCosmetic.OnClientEvent:Connect(function(_, tab)
+	if tab == "Trails" then
+		equippedTrail = ""
+		refreshAllButtonStyles()
+	end
+end)
+
+-- For Studio previewing
+if not game:GetService("RunService"):IsRunning() then open() end

@@ -1,145 +1,176 @@
 --------------------------------------------------------------------
--- RunFXController.lua • build-up zoom ? POP boost ? smooth settle
--- 02-Aug-25  – running-wind stays on after Shift / stamina end
+-- RunFXController.lua • build-up zoom, sprint effects, and sounds (Optimized)
+-- • Replaces inefficient UI search with a direct path.
+-- • Simplifies state management for visual effects.
+-- • Consolidates trail toggling logic for better organization.
 --------------------------------------------------------------------
-local Plr , RS , UIS , TwS , Rep = game.Players.LocalPlayer ,
-	game:GetService("RunService") ,
-	game:GetService("UserInputService") ,
-	game:GetService("TweenService") ,
-	game:GetService("ReplicatedStorage")
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+local TweenService      = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Rem         = Rep.Remotes
-local SprintEvt   = Rem.SprintToggle
-local BoostFX     = Rem.BoostBroadcast
-local TrailTog    = Rem.TrailToggle
-local FX          = require(Rep.Config.FXConfig)
+local player = Players.LocalPlayer
 
-----------------------------  FOV numbers  --------------------------
-local IDLE_FOV    = FX.FOV_MIN
-local RUN_FOV     = FX.FOV_MAX
-local POP_FOV     = 120
-local CRUISE_FOV  = 96
-local POP_TIME    = 0.35
-local SETTLE_TIME = 0.9
-local RETURN_TIME = 0.5
-local BUILDUP_SEC = 0.65
+-- Remotes & Config
+local Remotes         = ReplicatedStorage.Remotes
+local SprintToggle    = Remotes.SprintToggle
+local BoostBroadcast  = Remotes.BoostBroadcast
+local TrailToggle     = Remotes.TrailToggle -- This remote will be fired from here
+local FXConfig        = require(ReplicatedStorage.Config.FXConfig)
 
-------------------------------  Sounds  ----------------------------
-local BoomSample      = Rep.RunFXAssets.SonicBoom ; BoomSample.Volume = 1.3
-local WindLoopPrefab  = Rep.RunFXAssets.RunningWind ; WindLoopPrefab.Volume = 0.75
+-- Sound Assets
+local RunFXAssets     = ReplicatedStorage:WaitForChild("RunFXAssets")
+local BoomSample      = RunFXAssets:WaitForChild("SonicBoom")
+local WindLoopPrefab  = RunFXAssets:WaitForChild("RunningWind")
 
----------------------------  Stamina bar  --------------------------
-local function findBar(timeout)
-	local pg = Plr:WaitForChild("PlayerGui")
-	local t  = 0
-	while t < timeout do
-		for _, d in ipairs(pg:GetDescendants()) do
-			if d:IsA("Frame") and d.Name == "Bar" then
-				return d, d:FindFirstChild("Fill") or d
-			end
-		end
-		t += RS.Heartbeat:Wait()
+-- UI Stamina Bar (Direct Path)
+local StaminaBar = player:WaitForChild("PlayerGui"):WaitForChild("HUDGui"):WaitForChild("StaminaBar"):WaitForChild("Bar")
+
+--------------------------
+-- State & Configuration
+--------------------------
+local cam = workspace.CurrentCamera
+local IDLE_FOV    = FXConfig.FOV_MIN
+local RUN_FOV     = FXConfig.FOV_MAX
+local SPRINT_FOV  = 95 -- A dedicated FOV for sprinting
+local POP_TIME    = 0.2
+local SETTLE_TIME = 0.8
+local RETURN_TIME = 0.4
+
+local fxOn, isSprinting = false, false
+local windSound, fovTween
+
+--------------------------
+-- Helper Functions
+--------------------------
+local function setStaminaBar(percentage)
+	if StaminaBar and StaminaBar:FindFirstChild("Fill") then
+		StaminaBar.Fill.Size = UDim2.fromScale(math.clamp(percentage, 0, 1), 1)
 	end
 end
-local barFrame, barFill = findBar(10)
-local function setBar(v) if barFill then barFill.Size = UDim2.new(v,0,1,0) end end
 
---------------------------  Runtime state  -------------------------
-local cam = workspace.CurrentCamera
-local char, hum, topSpeed, stam
-local fxOn, sprint, timer = false, false, 0
-local windLoop, fovTween, currentTarget
-
------------------------------- Helpers -----------------------------
-local function ensureWind()
-	if windLoop and windLoop.Parent then return windLoop end
-	windLoop            = WindLoopPrefab:Clone()
-	windLoop.Looped     = true
-	windLoop.Parent     = cam
-	return windLoop
+local function ensureWindSound()
+	if not windSound or not windSound.Parent then
+		windSound = WindLoopPrefab:Clone()
+		windSound.Looped = true
+		windSound.Volume = 0.7
+		windSound.Parent = cam
+	end
+	return windSound
 end
-local function startWind() local s = ensureWind(); if not s.IsPlaying then s:Play() end end
-local function stopWind()  if windLoop then windLoop:Stop() end end
-local function setTrails(on) TrailTog:FireServer(on) end
 
-local function tweenFOV(toFov, dur)
-	if currentTarget and math.abs(currentTarget - toFov) < 0.1 then return end
+local function tweenFOV(targetFov, duration)
 	if fovTween then fovTween:Cancel() end
-	currentTarget = toFov
-	fovTween = TwS:Create(
-		cam,
-		TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{FieldOfView = toFov}
-	)
+	local info = TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	fovTween = TweenService:Create(cam, info, {FieldOfView = targetFov})
 	fovTween:Play()
 end
 
----------------------------  Render loop  ---------------------------
-RS.RenderStepped:Connect(function(dt)
-	if not (hum and topSpeed and stam) then return end
-	setBar(stam.Value/100)
+local function setVisuals(enabled: boolean)
+	if fxOn == enabled then return end
+	fxOn = enabled
 
-	local moving   = hum.MoveDirection.Magnitude > 0
-	local nearTop  = hum.WalkSpeed >= topSpeed.Value * 0.98
-	timer          = (moving and nearTop) and (timer + dt) or 0
+	TrailToggle:FireServer(enabled) -- Tell server to replicate trail state
 
-	local wantFX   = (timer >= BUILDUP_SEC) or sprint
-	if wantFX and not fxOn then
-		fxOn = true
-		startWind(); setTrails(true)
-		if not sprint then tweenFOV(RUN_FOV, FX.ZOOM_TIME) end
-	elseif (not wantFX) and fxOn then
-		fxOn = false
-		stopWind();  setTrails(false)
+	if enabled then
+		ensureWindSound():Play()
+		tweenFOV(RUN_FOV, 0.5)
+	else
+		if windSound then windSound:Stop() end
 		tweenFOV(IDLE_FOV, RETURN_TIME)
 	end
-end)
+end
 
--------------------------  Sprint keybinds  -------------------------
-UIS.InputBegan:Connect(function(i,gp)
-	if gp or i.KeyCode ~= Enum.KeyCode.LeftShift then return end
-	if not (stam and stam.Value >= 100) then return end  -- full-bar gate
+--------------------------
+-- Main Logic
+--------------------------
+local function onCharacter(character)
+	local humanoid = character:WaitForChild("Humanoid")
+	local stamina = player:WaitForChild("Stamina")
+	local currentSpeed = character:WaitForChild("CurrentSpeed")
 
-	sprint = true
-	SprintEvt:FireServer(true)
+	-- Reset state on new character
+	isSprinting = false
+	setVisuals(false)
+	cam.FieldOfView = IDLE_FOV
 
-	local boom = BoomSample:Clone(); boom.Parent = cam; boom:Play()
+	-- Render loop connection per character
+	local connection
+	connection = RunService.RenderStepped:Connect(function()
+		if not humanoid or humanoid.Health <= 0 then
+			connection:Disconnect() -- Disconnect if character is gone
+			return
+		end
 
-	tweenFOV(POP_FOV, POP_TIME)
-	task.delay(POP_TIME, function()
-		if sprint then tweenFOV(CRUISE_FOV, SETTLE_TIME) end
+		setStaminaBar(stamina.Value / 100)
+
+		local isMoving = humanoid.MoveDirection.Magnitude > 0.1
+		local isNearTopSpeed = humanoid.WalkSpeed >= currentSpeed.Value * 0.9
+
+		-- Only show run FX when moving near top speed and not sprinting
+		setVisuals(isMoving and isNearTopSpeed and not isSprinting)
 	end)
-end)
+end
 
-UIS.InputEnded:Connect(function(i,gp)
-	if gp or i.KeyCode ~= Enum.KeyCode.LeftShift then return end
-	sprint = false
-	SprintEvt:FireServer(false)
+--------------------------
+-- Input and Remote Events
+--------------------------
+local function startSprint()
+	if isSprinting then return end
+	local stamina = player:FindFirstChild("Stamina")
+	if not stamina or stamina.Value < 100 then return end -- Full stamina required
+
+	isSprinting = true
+	SprintToggle:FireServer(true)
+
+	local boom = BoomSample:Clone()
+	boom.Parent = cam
+	boom:Play()
+	game:GetService("Debris"):AddItem(boom, 2)
+
+	tweenFOV(SPRINT_FOV, POP_TIME)
+end
+
+local function endSprint()
+	if not isSprinting then return end
+	isSprinting = false
+	SprintToggle:FireServer(false)
+
+	-- Return to the correct FOV based on whether the run FX should be active
 	tweenFOV(fxOn and RUN_FOV or IDLE_FOV, RETURN_TIME)
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed or input.KeyCode ~= Enum.KeyCode.LeftShift then return end
+	startSprint()
 end)
 
-----------------------  Lightspeed server boost --------------------
-BoostFX.OnClientEvent:Connect(function(on)
-	sprint = on
-	if on then
-		startWind()
-		tweenFOV(CRUISE_FOV, SETTLE_TIME)
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+	if gameProcessed or input.KeyCode ~= Enum.KeyCode.LeftShift then return end
+	endSprint()
+end)
+
+-- Handle server-side forced "Lightspeed" boost
+BoostBroadcast.OnClientEvent:Connect(function(enabled)
+	if enabled then
+		isSprinting = true
+		tweenFOV(SPRINT_FOV, SETTLE_TIME)
+		ensureWindSound():Play()
+		TrailToggle:FireServer(true) -- Also enable trails
 	else
-		-- Keep wind & trails if FX already active
-		if not fxOn then stopWind(); setTrails(false) end
+		isSprinting = false
+		-- Only stop effects if the player isn't regularly running fast
+		if not fxOn then
+			if windSound then windSound:Stop() end
+			TrailToggle:FireServer(false)
+		end
 		tweenFOV(fxOn and RUN_FOV or IDLE_FOV, RETURN_TIME)
 	end
 end)
 
----------------------------  Respawn hook  --------------------------
-local function onChar(c)
-	char, hum  = c, c:WaitForChild("Humanoid")
-	topSpeed   = c:WaitForChild("CurrentSpeed")
-	stam       = Plr:WaitForChild("Stamina")
-
-	cam.FieldOfView, currentTarget = IDLE_FOV, IDLE_FOV
-	fxOn, sprint, timer = false, false, 0
-	setBar(1)
-end
-Plr.CharacterAdded:Connect(onChar)
-if Plr.Character then onChar(Plr.Character) end
+--------------------------
+-- Initialization
+--------------------------
+if player.Character then onCharacter(player.Character) end
+player.CharacterAdded:Connect(onCharacter)

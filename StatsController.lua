@@ -1,100 +1,149 @@
 --------------------------------------------------------------------
--- StatsController.lua
+-- StatsController.lua (Optimized)
+-- • Now updates all stats (PB, Coins, Prestige) in real-time.
+-- • Fixes the active boost timer to provide an accurate live countdown.
+-- • Reduces server calls and improves UI responsiveness.
 --------------------------------------------------------------------
------------------------------- Services ----------------------------
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UIS               = game:GetService("UserInputService")
+local UserInputService  = game:GetService("UserInputService")
+local RunService        = game:GetService("RunService")
 
------------------------------- UI refs ----------------------------
-local panel    = script.Parent                     -- StatsPanel
-local gui      = panel.Parent                      -- StatsGui
+local player = Players.LocalPlayer
+
+-- UI Refs
+local panel    = script.Parent
+local gui      = panel.Parent
 local closeBtn = panel.CloseButton
-local content  = panel.ContentArea                 -- ScrollingFrame
-local rowTpl   = content.StatTemplate              -- invisible template
+local content  = panel.ContentArea
+local rowTpl   = content.StatTemplate
 
------------------------------- Remotes & Events -------------------
+-- Remotes & Events
 local UIEvents     = ReplicatedStorage:WaitForChild("UIEvents")
 local ModalState   = UIEvents:WaitForChild("ModalState")
-
-local Remotes      = ReplicatedStorage:WaitForChild("Remotes")    -- ? FIX
-local GetStatsRF   = Remotes:WaitForChild("GetStats")             -- ? FIX
+local Remotes      = ReplicatedStorage:WaitForChild("Remotes")
+local GetStatsRF   = Remotes:WaitForChild("GetStats")
 local OpenStatsEvt = ReplicatedStorage:WaitForChild("OpenStats")
 
------------------------------- Helpers ----------------------------
-local player = Players.LocalPlayer
-local rowsByKey = {}         -- ["Coins"] = ValueLabel
-local coinConn  -- RBXScriptConnection
+--------------------------------------------------------------------
+-- State & Helpers
+--------------------------------------------------------------------
+local rowsByKey = {} -- ["Coins"] = ValueLabel
+local connections = {} -- To hold script connections so we can disconnect them
+local boostRows = {} -- To manage active boost countdowns
 
 local function fmtTime(t:number): string
 	return (t == math.huge) and "--:--.--"
-		or string.format("%d:%05.2f", math.floor(t/60), t%60)
+		or string.format("%d:%05.2f", math.floor(t/60), t % 60)
 end
 
 local function clearRows()
-	for _, ch in ipairs(content:GetChildren()) do
-		if ch:IsA("Frame") and ch ~= rowTpl then ch:Destroy() end
+	for _, child in ipairs(content:GetChildren()) do
+		if child:IsA("Frame") and child ~= rowTpl then
+			child:Destroy()
+		end
 	end
 	rowsByKey = {}
+	boostRows = {}
 end
 
-local function addRow(key:string, val:any, order:number)
-	local r = rowTpl:Clone()
-	r.Visible, r.LayoutOrder = true, order
-	r.NameLabel.Text, r.ValueLabel.Text = key, tostring(val)
-	r.Parent = content
-	rowsByKey[key] = r.ValueLabel
+local function createRow(key: string, val: any, order: number)
+	local row = rowTpl:Clone()
+	row.Visible = true
+	row.LayoutOrder = order
+	row.NameLabel.Text = key
+	row.ValueLabel.Text = tostring(val)
+	row.Parent = content
+	rowsByKey[key] = row.ValueLabel
+	return row
 end
 
----------------- live Coins watcher --------------------------------
-local function watchCoins()
-	if coinConn then coinConn:Disconnect(); coinConn = nil end
-	local ls = player:FindFirstChild("leaderstats")
-	if ls and ls:FindFirstChild("Coins") and rowsByKey["Coins"] then
-		coinConn = ls.Coins.Changed:Connect(function(v)
-			rowsByKey["Coins"].Text = tostring(v)
-		end)
+--------------------------------------------------------------------
+-- Live UI Management
+--------------------------------------------------------------------
+local function updateBoosts()
+	for boostName, data in pairs(boostRows) do
+		local remaining = math.max(0, math.ceil(data.expireTime - os.time()))
+		if remaining > 0 then
+			data.label.Text = remaining .. "s"
+		else
+			data.row:Destroy() -- Remove the row when the boost expires
+			boostRows[boostName] = nil
+		end
 	end
 end
 
----------------- open / close -------------------------------------
+local function watchStats()
+	-- Disconnect any old connections to prevent memory leaks
+	for _, conn in pairs(connections) do conn:Disconnect() end
+	table.clear(connections)
+
+	local ls = player:WaitForChild("leaderstats")
+
+	-- Connect to leaderstat changes
+	table.insert(connections, ls.Coins.Changed:Connect(function(v) rowsByKey["Coins"].Text = tostring(v) end))
+	table.insert(connections, ls.Prestige.Changed:Connect(function(v) rowsByKey["Prestige"].Text = tostring(v) end))
+	table.insert(connections, ls.BestTime.Changed:Connect(function(v) rowsByKey["Personal Best"].Text = fmtTime(v) end))
+
+	-- Connect to the Heartbeat to update boost timers
+	table.insert(connections, RunService.Heartbeat:Connect(updateBoosts))
+end
+
+--------------------------------------------------------------------
+-- Open / Close Panel
+--------------------------------------------------------------------
 local function open()
 	ModalState:Fire(true)
-	local stats, serverTime = GetStatsRF:InvokeServer()
+	gui.Enabled, panel.Visible = true, true
+
+	-- Fetch the initial data from the server
+	local stats = GetStatsRF:InvokeServer()
+	if not stats then close(); return end
 
 	clearRows()
-	local ord = 1
-	addRow("Prestige",        stats.Prestige,           ord); ord += 1
-	addRow("Personal Best",   fmtTime(stats.BestTime),  ord); ord += 1
-	addRow("Coins",           stats.Coins,              ord); ord += 1
-	addRow("Lifetime Coins",  stats.TotalCoins,         ord); ord += 1
-	addRow("Runs Finished",   stats.RunsFinished,       ord); ord += 1
 
-	-- active boosts (if any)
-	local boosts = player:WaitForChild("ActiveBoosts")
-	for _, b in ipairs(boosts:GetChildren()) do
-		if b.Value and b:FindFirstChild("ExpireAt") then
-			local remain = math.max(0, math.ceil(b.ExpireAt.Value - serverTime))
-			addRow("Active "..b.Name, remain.." s", ord)
-			ord += 1
+	-- Create static and leaderstat-driven rows
+	local ord = 1
+	createRow("Prestige", stats.Prestige, ord); ord += 1
+	createRow("Personal Best", fmtTime(stats.BestTime), ord); ord += 1
+	createRow("Coins", stats.Coins, ord); ord += 1
+	createRow("Lifetime Coins", stats.TotalCoins, ord); ord += 1
+	createRow("Runs Finished", stats.RunsFinished, ord); ord += 1
+
+	-- Create rows for any active boosts
+	local boostsFolder = player:WaitForChild("ActiveBoosts")
+	for _, boostFlag in ipairs(boostsFolder:GetChildren()) do
+		if boostFlag.Value and boostFlag:IsA("BoolValue") then
+			local expireAt = boostFlag:FindFirstChild("ExpireAt")
+			if expireAt then
+				local row = createRow("Active: " .. boostFlag.Name, "", ord); ord += 1
+				boostRows[boostFlag.Name] = {
+					row = row,
+					label = row.ValueLabel,
+					expireTime = expireAt.Value,
+				}
+			end
 		end
 	end
 
-	watchCoins()
-	gui.Enabled, panel.Visible = true, true
+	watchStats()
 end
 
 local function close()
+	for _, conn in pairs(connections) do conn:Disconnect() end
+	table.clear(connections)
+
 	gui.Enabled, panel.Visible = false, false
 	ModalState:Fire(false)
-	if coinConn then coinConn:Disconnect(); coinConn = nil end
 end
 
 closeBtn.MouseButton1Click:Connect(close)
-UIS.InputBegan:Connect(function(inp,gp)
-	if not gp and inp.KeyCode == Enum.KeyCode.Escape and gui.Enabled then close() end
+UserInputService.InputBegan:Connect(function(inp, gp)
+	if not gp and inp.KeyCode == Enum.KeyCode.Escape and gui.Enabled then
+		close()
+	end
 end)
 OpenStatsEvt.Event:Connect(open)
 
--- Studio preview
-if not game:GetService("RunService"):IsRunning() then open() end
+-- For Studio previewing
+if not RunService:IsRunning() then open() end
