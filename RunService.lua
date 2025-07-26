@@ -2,9 +2,9 @@
 -- RunService.lua • speed, stamina, sprint, run-timer
 --------------------------------------------------------------------
 local Players, WS, RS, Rep = game:GetService("Players"),
-game:GetService("Workspace"),
-game:GetService("RunService"),
-game:GetService("ReplicatedStorage")
+	game:GetService("Workspace"),
+	game:GetService("RunService"),
+	game:GetService("ReplicatedStorage")
 
 local DataAPI   = require(game.ServerScriptService.PlayerDataManager)
 local SpeedCfg  = require(Rep.Config.SpeedConfig)
@@ -16,7 +16,7 @@ local FinishRun     = R:WaitForChild("FinishRun")
 local SprintEvt     = R:WaitForChild("SprintToggle")
 local BoostFX       = R:WaitForChild("BoostBroadcast")
 local TrailTog      = R:WaitForChild("TrailToggle")
-local ReqRunStart   = Rep:WaitForChild("RequestRunStart")
+local ReqRunStart   = Rep.Remotes:WaitForChild("RequestRunStart")
 local TeleportStart = Rep:WaitForChild("TeleportToStart")
 
 -- ? New: OpenPrestige RemoteEvent (server ? client)

@@ -25,7 +25,7 @@ local Remotes           = ReplicatedStorage:WaitForChild("Remotes")
 local StartRun          = Remotes:WaitForChild("StartRun")
 local FinishRun         = Remotes:WaitForChild("FinishRun")
 
-local RequestRunStart   = ReplicatedStorage:WaitForChild("RequestRunStart")
+local RequestRunStart   = ReplicatedStorage.Remotes:WaitForChild("RequestRunStart")
 local TeleportToLobby   = ReplicatedStorage:WaitForChild("TeleportToLobby")
 local TeleportToStart   = ReplicatedStorage:WaitForChild("TeleportToStart")
 local OpenMainMenuLocal = ReplicatedStorage:WaitForChild("OpenMainMenuLocal")

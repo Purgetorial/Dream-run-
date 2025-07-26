@@ -2,7 +2,7 @@ local player = game.Players.LocalPlayer
 local gui = script.Parent
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local OpenMainMenuLocal = ReplicatedStorage:WaitForChild("OpenMainMenuLocal")
-local RequestRunStart = ReplicatedStorage:WaitForChild("RequestRunStart")
+local RequestRunStart = ReplicatedStorage.Remotes:WaitForChild("RequestRunStart")
 
 local mainPanel = gui:WaitForChild("MainPanel")
 local leaderboardButton = mainPanel.ButtonHolder:WaitForChild("LeaderboardButton")
