@@ -1,12 +1,14 @@
 --------------------------------------------------------------------
 --  PlayerDataManager.lua  •  Luau version (Optimized)
---  • Fixes PB saving issue by removing redundant save calls.
---  • Adds a robust autosave feature to prevent data loss on crash.
---  • Centralizes data saving to be more efficient and reliable.
+--  • Now uses require() for LeaderboardService, removing _G dependency.
+--  • Includes robust autosave and reliable data handling.
 --------------------------------------------------------------------
 local DataStoreService = game:GetService("DataStoreService")
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
+
+-- Service Modules
+local LeaderboardService = require(game.ServerScriptService.LeaderboardService)
 
 local MAIN_KEY    = "PlayerData_v3"
 local AUTOSAVE_INTERVAL = 60 -- seconds
@@ -125,11 +127,9 @@ Players.PlayerAdded:Connect(function(plr)
 	session[plr.UserId] = data
 	setupLeaderstats(plr, data)
 
-	-- Keep global board in sync
-	if _G.LeaderboardService then
-		_G.LeaderboardService.UpdatePrestige(plr, data.Prestige)
-		_G.LeaderboardService.UpdateBestTime(plr, data.BestTime)
-	end
+	-- Keep global board in sync using the required module
+	LeaderboardService.UpdatePrestige(plr, data.Prestige)
+	LeaderboardService.UpdateBestTime(plr, data.BestTime)
 end)
 
 Players.PlayerRemoving:Connect(function(plr)
@@ -168,27 +168,23 @@ function DataAPI.Get(plr: Player)
 	return session[plr.UserId]
 end
 
--- This function is no longer needed, saving is handled automatically.
--- It's kept here for compatibility in case other scripts call it, but it does nothing.
 function DataAPI.Save(plr: Player)
 	warn("DataAPI.Save is deprecated and should be removed. Saving is automatic.")
-	-- Intentionally left blank
 end
 
 function DataAPI.Set(plr: Player, key: string, value: any)
 	local d = session[plr.UserId]
 	if d and d[key] ~= value then
 		d[key] = value
-		dirty[plr.UserId] = true -- Mark data as changed
+		dirty[plr.UserId] = true
 	end
 end
 
--- Increment helpers
 function DataAPI.AddCoins(plr: Player, amount: number)
 	local d = session[plr.UserId] ; if not d then return end
 	d.Coins            = (d.Coins or 0) + amount
 	d.TotalCoinsEarned = (d.TotalCoinsEarned or 0) + amount
-	dirty[plr.UserId] = true -- Mark data as changed
+	dirty[plr.UserId] = true
 
 	local ls = plr:FindFirstChild("leaderstats")
 	if ls and ls:FindFirstChild("Coins") then
@@ -200,30 +196,25 @@ function DataAPI.IncrementRuns(plr: Player)
 	local d = session[plr.UserId]
 	if not d then return end
 	d.RunsFinished = (d.RunsFinished or 0) + 1
-	dirty[plr.UserId] = true -- Mark data as changed
+	dirty[plr.UserId] = true
 end
 
--- Best-time helper
 function DataAPI.UpdateBestTime(plr: Player, newTime: number)
 	local d = session[plr.UserId]; if not d then return end
 	if newTime < (d.BestTime or math.huge) then
 		d.BestTime = newTime
-		dirty[plr.UserId] = true -- Mark data as changed
+		dirty[plr.UserId] = true
 
-		-- Live leaderstat update
 		local ls = plr:FindFirstChild("leaderstats")
 		if ls and ls:FindFirstChild("BestTime") then
 			ls.BestTime.Value = newTime
 		end
 
-		-- Push to global leaderboard service (if present)
-		if _G.LeaderboardService and _G.LeaderboardService.UpdateBestTime then
-			_G.LeaderboardService.UpdateBestTime(plr, newTime)
-		end
+		-- Push to global leaderboard service
+		LeaderboardService.UpdateBestTime(plr, newTime)
 	end
 end
 
--- Stats helper
 function DataAPI.GetStats(plr: Player)
 	local d = session[plr.UserId] or deepClone(DEFAULT_DATA)
 	return {
