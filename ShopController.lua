@@ -1,7 +1,8 @@
 -------------------------------------------------------------------------------
--- ShopController.lua · (Asynchronous, No-Freeze Caching & Bug Fix)
--- • FIX: Uses :FireServer() instead of :Fire() for client-to-server communication.
--- • Opens instantly and updates button states in the background.
+-- ShopController.lua · (Truly Asynchronous, No-Freeze, Final Version)
+-- • FIX: Re-added the MouseButton1Click connections for the tab buttons.
+-- • Uses task.spawn() to run all data-fetching in the background for an instant open.
+-- • Button states update asynchronously after the UI is visible.
 -------------------------------------------------------------------------------
 local Players            = game:GetService("Players")
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
@@ -70,7 +71,7 @@ local function styleButton(btn: TextButton, state: string, isRobux: boolean)
 		btn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
 		btn.Active = false
 		btn.AutoButtonColor = false
-	else
+	else -- "..." (processing) or "Loading"
 		btn.Text = "..."
 		btn.BackgroundColor3 = Color3.fromRGB(150, 150, 150)
 		btn.Active = false
@@ -118,18 +119,8 @@ local function createRow(tabName, item)
 	return row
 end
 
-local function initializeShop()
-	if hasInitialized then return end
-
-	for _, item in ipairs(ShopItems.Boosts) do createRow("Boosts", item) end
-	for _, item in ipairs(ShopItems.Cosmetics) do createRow("Cosmetics", item) end
-	for _, item in ipairs(ShopItems.Robux) do createRow("Robux", item) end
-
-	hasInitialized = true
-	content.CanvasSize = UDim2.fromOffset(0, content.UIListLayout.AbsoluteContentSize.Y)
-end
-
 local function setTab(tabName: string)
+	if currentTab == tabName and gui.Enabled then return end -- Don't re-select the same tab
 	currentTab = tabName
 
 	for name, btn in pairs(tabs) do
@@ -143,12 +134,22 @@ local function setTab(tabName: string)
 	end
 end
 
-local function refreshButtonStates()
+local function initializeShop()
+	if hasInitialized then return end
+
+	for _, item in ipairs(ShopItems.Boosts) do createRow("Boosts", item) end
+	for _, item in ipairs(ShopItems.Cosmetics) do createRow("Cosmetics", item) end
+	for _, item in ipairs(ShopItems.Robux) do createRow("Robux", item) end
+
+	hasInitialized = true
+	content.CanvasSize = UDim2.fromOffset(0, content.UIListLayout.AbsoluteContentSize.Y)
+end
+
+local function updateAllButtonStates()
 	for _, row in pairs(itemRows.Cosmetics) do
 		styleButton(row.BuyButton, "...", false)
 	end
 
-	-- FIX: Use :FireServer() here
 	RequestCosmetics:FireServer()
 
 	local activeBoosts = player:WaitForChild("ActiveBoosts", 5)
@@ -165,19 +166,27 @@ local function refreshButtonStates()
 end
 
 -------------------------------------------------------------------------------
--- Open / Close Logic
+-- Open / Close Logic & Event Connections
 -------------------------------------------------------------------------------
 local function openShop()
 	initializeShop()
-	refreshButtonStates()
 	ModalState:Fire(true)
 	gui.Enabled, panel.Visible = true, true
 	setTab(currentTab)
+
+	task.spawn(updateAllButtonStates)
 end
 
 local function closeShop()
 	gui.Enabled, panel.Visible = false, false
 	ModalState:Fire(false)
+end
+
+-- FIX: Connect the tab buttons to the setTab function
+for name, button in pairs(tabs) do
+	button.MouseButton1Click:Connect(function()
+		setTab(name)
+	end)
 end
 
 closeBtn.MouseButton1Click:Connect(closeShop)
