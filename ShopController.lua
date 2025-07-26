@@ -1,8 +1,7 @@
 -------------------------------------------------------------------------------
--- ShopController.lua · (Optimized with UI Caching & Bug Fix)
--- • FIX: Correctly references "UIListLayout" instead of the non-existent "UILayout".
--- • Implements a UI caching system for performance.
--- • Uses direct leaderstat connections for live coin updates.
+-- ShopController.lua · (Optimized with Caching & Race-Condition Fix)
+-- • FIX: Added a timeout to WaitForChild to prevent infinite yield on ActiveBoosts.
+-- • FIX: Added WaitForChild for leaderstats to prevent startup errors.
 -------------------------------------------------------------------------------
 local Players            = game:GetService("Players")
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
@@ -121,7 +120,6 @@ local function initializeShop()
 	for _, item in ipairs(ShopItems.Robux) do createRow("Robux", item) end
 
 	hasInitialized = true
-	-- FIX: Reference the correct UIListLayout object by name
 	content.CanvasSize = UDim2.fromOffset(0, content.UIListLayout.AbsoluteContentSize.Y)
 end
 
@@ -141,17 +139,22 @@ end
 
 local function refreshButtonStates()
 	local cosmeticsData = GetCosmetics:InvokeServer()
-	local ownedTrails = cosmeticsData.OwnedCosmetics.Trails or {}
-	for _, trailName in ipairs(ownedTrails) do
-		if itemRows.Cosmetics[trailName] then
-			styleButton(itemRows.Cosmetics[trailName].BuyButton, "Owned", false)
+	if cosmeticsData and cosmeticsData.OwnedCosmetics then
+		local ownedTrails = cosmeticsData.OwnedCosmetics.Trails or {}
+		for _, trailName in ipairs(ownedTrails) do
+			if itemRows.Cosmetics[trailName] then
+				styleButton(itemRows.Cosmetics[trailName].BuyButton, "Owned", false)
+			end
 		end
 	end
 
-	local activeBoosts = player:WaitForChild("ActiveBoosts")
-	for _, boostFlag in ipairs(activeBoosts:GetChildren()) do
-		if itemRows.Boosts[boostFlag.Name] then
-			styleButton(itemRows.Boosts[boostFlag.Name].BuyButton, boostFlag.Value and "Active" or "Buy", true)
+	-- FIX: Wait for the ActiveBoosts folder with a timeout
+	local activeBoosts = player:WaitForChild("ActiveBoosts", 5)
+	if activeBoosts then
+		for _, boostFlag in ipairs(activeBoosts:GetChildren()) do
+			if itemRows.Boosts[boostFlag.Name] then
+				styleButton(itemRows.Boosts[boostFlag.Name].BuyButton, boostFlag.Value and "Active" or "Buy", true)
+			end
 		end
 	end
 	if player:FindFirstChild("PermanentLightspeed") and itemRows.Boosts["Lightspeed"] then
@@ -181,7 +184,9 @@ UserInputService.InputBegan:Connect(function(i, gp)
 end)
 OpenShopEvt.Event:Connect(openShop)
 
-player:WaitForChild("leaderstats"):WaitForChild("Coins").Changed:Connect(updateCoins)
-updateCoins(player.leaderstats.Coins.Value)
+-- FIX: Wait for leaderstats to exist before connecting
+local leaderstats = player:WaitForChild("leaderstats")
+leaderstats:WaitForChild("Coins").Changed:Connect(updateCoins)
+updateCoins(leaderstats.Coins.Value)
 
 if not game:GetService("RunService"):IsRunning() then openShop() end

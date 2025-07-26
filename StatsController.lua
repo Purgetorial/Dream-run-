@@ -1,8 +1,7 @@
 --------------------------------------------------------------------
--- StatsController.lua (Optimized & Bug-Fixed)
--- • FIX: Removed an invalid function call that was causing a warning.
--- • Now updates all stats (PB, Coins, Prestige) in real-time.
--- • Fixes the active boost timer to provide an accurate live countdown.
+-- StatsController.lua (Optimized & Race-Condition Fixed)
+-- • FIX: Added a timeout to WaitForChild to prevent infinite yield on ActiveBoosts.
+-- • Updates stats in real-time and provides an accurate boost countdown.
 --------------------------------------------------------------------
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -28,9 +27,10 @@ local OpenStatsEvt = ReplicatedStorage:WaitForChild("OpenStats")
 --------------------------------------------------------------------
 -- State & Helpers
 --------------------------------------------------------------------
-local rowsByKey = {} -- ["Coins"] = ValueLabel
-local connections = {} -- To hold script connections so we can disconnect them
-local boostRows = {} -- To manage active boost countdowns
+local rowsByKey = {}
+local connections = {}
+local boostRows = {}
+local close -- Forward declare
 
 local function fmtTime(t:number): string
 	return (t == math.huge) and "--:--.--"
@@ -67,29 +67,22 @@ local function updateBoosts()
 		if remaining > 0 then
 			data.label.Text = remaining .. "s"
 		else
-			data.row:Destroy() -- Remove the row when the boost expires
+			data.row:Destroy()
 			boostRows[boostName] = nil
 		end
 	end
 end
 
--- Forward declare the close function so it can be referenced
-local close 
-
 local function watchStats()
-	-- Disconnect any old connections to prevent memory leaks
 	for _, conn in pairs(connections) do conn:Disconnect() end
 	table.clear(connections)
 
 	local ls = player:WaitForChild("leaderstats")
 	if not ls then close() return end
 
-	-- Connect to leaderstat changes
 	table.insert(connections, ls.Coins.Changed:Connect(function(v) rowsByKey["Coins"].Text = tostring(v) end))
 	table.insert(connections, ls.Prestige.Changed:Connect(function(v) rowsByKey["Prestige"].Text = tostring(v) end))
 	table.insert(connections, ls.BestTime.Changed:Connect(function(v) rowsByKey["Personal Best"].Text = fmtTime(v) end))
-
-	-- Connect to the Heartbeat to update boost timers
 	table.insert(connections, RunService.Heartbeat:Connect(updateBoosts))
 end
 
@@ -102,9 +95,6 @@ local function open()
 
 	local stats = GetStatsRF:InvokeServer()
 	if not stats then
-		-- The stats werent loaded, we should close the panel.
-		-- We can't call close() directly here because it may not be defined yet.
-		-- Instead, we can just disable the GUI.
 		gui.Enabled, panel.Visible = false, false
 		ModalState:Fire(false)
 		return
@@ -119,17 +109,20 @@ local function open()
 	createRow("Lifetime Coins", stats.TotalCoins, ord); ord += 1
 	createRow("Runs Finished", stats.RunsFinished, ord); ord += 1
 
-	local boostsFolder = player:WaitForChild("ActiveBoosts")
-	for _, boostFlag in ipairs(boostsFolder:GetChildren()) do
-		if boostFlag.Value and boostFlag:IsA("BoolValue") then
-			local expireAt = boostFlag:FindFirstChild("ExpireAt")
-			if expireAt then
-				local row = createRow("Active: " .. boostFlag.Name, "", ord); ord += 1
-				boostRows[boostFlag.Name] = {
-					row = row,
-					label = row.ValueLabel,
-					expireTime = expireAt.Value,
-				}
+	-- FIX: Wait for the ActiveBoosts folder with a timeout
+	local boostsFolder = player:WaitForChild("ActiveBoosts", 5)
+	if boostsFolder then
+		for _, boostFlag in ipairs(boostsFolder:GetChildren()) do
+			if boostFlag.Value and boostFlag:IsA("BoolValue") then
+				local expireAt = boostFlag:FindFirstChild("ExpireAt")
+				if expireAt then
+					local row = createRow("Active: " .. boostFlag.Name, "", ord); ord += 1
+					boostRows[boostFlag.Name] = {
+						row = row,
+						label = row.ValueLabel,
+						expireTime = expireAt.Value,
+					}
+				end
 			end
 		end
 	end
