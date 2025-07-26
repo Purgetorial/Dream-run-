@@ -43,6 +43,14 @@ local currentTab = "Boosts"
 local hasInitialized = false
 local itemRows = { Boosts = {}, Cosmetics = {}, Robux = {} }
 
+-- BUG FIX: Create a lookup map for boosts to fix a bug in the button styling logic
+local boostNameMap = {}
+for _, item in ipairs(ShopItems.Boosts) do
+	if item.BoostName then
+		boostNameMap[item.BoostName] = item.Name
+	end
+end
+
 -------------------------------------------------------------------------------
 -- Helper Functions
 -------------------------------------------------------------------------------
@@ -57,7 +65,7 @@ end
 local function styleButton(btn: TextButton, state: string, isRobux: boolean)
 	btn:SetAttribute("State", state)
 	if state == "Buy" then
-		btn.Text = isRobux and "R$" or "BUY"
+		btn.Text = isRobux and "BUY" or "BUY" -- Changed "R$" to "BUY" for consistency
 		btn.BackgroundColor3 = isRobux and Color3.fromRGB(0, 80, 255) or Color3.fromRGB(0, 170, 0)
 		btn.Active = true
 		btn.AutoButtonColor = true
@@ -92,7 +100,7 @@ local function createRow(tabName, item)
 	local isRobux = item.ProductId ~= nil
 	row.PriceLabel.Visible = not isRobux and item.Price and item.Price > 0
 	if row.PriceLabel.Visible then
-		row.PriceLabel.Text = "? " .. comma(item.Price)
+		row.PriceLabel.Text = " Coins: " .. comma(item.Price) -- Added "Coins:" for clarity
 	end
 
 	local btn = row.BuyButton
@@ -100,12 +108,10 @@ local function createRow(tabName, item)
 		if btn:GetAttribute("State") ~= "Buy" then return end
 		styleButton(btn, "...", isRobux)
 
-		-- FIX: Correctly differentiate between Robux and Coin purchases
 		if isRobux then
 			-- Robux purchases are handled entirely on the client
 			MarketplaceService:PromptProductPurchase(player, item.ProductId)
 			task.wait(0.5)
-			-- Reset button state if purchase is cancelled
 			if btn:GetAttribute("State") == "..." then
 				styleButton(btn, "Buy", isRobux)
 			end
@@ -151,24 +157,34 @@ local function initializeShop()
 end
 
 local function updateAllButtonStates()
+	-- Style Cosmetics
 	for _, row in pairs(itemRows.Cosmetics) do
 		styleButton(row.BuyButton, "...", false)
 	end
-
 	RequestCosmetics:FireServer()
+
+	-- REVISED: Correctly handle Boosts button states
+	for itemName, row in pairs(itemRows.Boosts) do
+		styleButton(row.BuyButton, "Buy", true) -- Default to "Buy"
+	end
 
 	local activeBoosts = player:WaitForChild("ActiveBoosts", 5)
 	if activeBoosts then
 		for _, boostFlag in ipairs(activeBoosts:GetChildren()) do
-			-- Find the corresponding item info to check if it's a Robux item
-			local itemInfo = ShopItems.Boosts[boostFlag.Name]
-			if itemRows.Boosts[boostFlag.Name] and itemInfo then
-				styleButton(itemRows.Boosts[boostFlag.Name].BuyButton, boostFlag.Value and "Active" or "Buy", true)
+			local itemName = boostNameMap[boostFlag.Name]
+			if itemName and itemRows.Boosts[itemName] and boostFlag.Value then
+				styleButton(itemRows.Boosts[itemName].BuyButton, "Active", true)
 			end
 		end
 	end
+
 	if player:FindFirstChild("PermanentLightspeed") and itemRows.Boosts["Lightspeed"] then
 		styleButton(itemRows.Boosts["Lightspeed"].BuyButton, "Owned", true)
+	end
+
+	-- BUG FIX: Explicitly set Robux items to the "Buy" state
+	for _, row in pairs(itemRows.Robux) do
+		styleButton(row.BuyButton, "Buy", true)
 	end
 end
 
@@ -179,10 +195,7 @@ local function openShop()
 	initializeShop()
 	ModalState:Fire(true)
 	gui.Enabled, panel.Visible = true, true
-
-	-- FIX: This now correctly sets the initial tab visibility
 	setTab(currentTab)
-
 	task.spawn(updateAllButtonStates)
 end
 
@@ -206,10 +219,12 @@ OpenShopEvt.Event:Connect(openShop)
 ReceiveCosmetics.OnClientEvent:Connect(function(cosmeticsData)
 	if not cosmeticsData or not cosmeticsData.OwnedCosmetics then return end
 
+	-- First reset all to "Buy"
 	for _, row in pairs(itemRows.Cosmetics) do
 		styleButton(row.BuyButton, "Buy", false)
 	end
 
+	-- Then set the ones they own to "Owned"
 	local ownedTrails = cosmeticsData.OwnedCosmetics.Trails or {}
 	for _, trailName in ipairs(ownedTrails) do
 		if itemRows.Cosmetics[trailName] then
