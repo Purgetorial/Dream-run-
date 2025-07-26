@@ -11,7 +11,7 @@ local DataAPI           = require(game.ServerScriptService.PlayerDataManager)
 --------------------------------------------------------------------
 -- REMOTE
 --------------------------------------------------------------------
-local CoinCollected = ReplicatedStorage:WaitForChild("CoinCollected")  -- fired by CoinController (client)
+local CoinCollected = ReplicatedStorage.Remotes:WaitForChild("CoinCollected")  -- fired by CoinController (client)
 
 --------------------------------------------------------------------
 -- CONFIG
