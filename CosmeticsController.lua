@@ -1,23 +1,24 @@
 --------------------------------------------------------------------
--- CosmeticsController.lua | (Optimized & Bug Fix)
--- • FIX: Correctly references "UIListLayout" instead of the non-existent "UILayout".
--- • Implements UI caching to eliminate lag when opening the menu.
--- • Simplifies state management for equipping/unequipping trails.
+-- CosmeticsController.lua | (Asynchronous, No-Freeze Caching & Bug Fix)
+-- • FIX: Uses asynchronous events to request and receive cosmetic data, eliminating UI freezing.
+-- • Opens instantly and updates item visibility in the background.
 --------------------------------------------------------------------
 local Players            = game:GetService("Players")
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
 local UserInputService   = game:GetService("UserInputService")
+local RunService         = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 
 -- Remotes & Config
-local Remotes         = ReplicatedStorage.Remotes
-local GetCosmetics    = Remotes.GetCosmetics
-local EquipCosmetic   = Remotes.EquipCosmetic
-local UnequipCosmetic = Remotes.UnequipCosmetic
-local ModalState      = ReplicatedStorage.UIEvents.ModalState
-local OpenCosmetics   = ReplicatedStorage.OpenCosmetics
-local ShopItems       = require(ReplicatedStorage.Config.ShopItems)
+local Remotes           = ReplicatedStorage.Remotes
+local EquipCosmetic     = Remotes.EquipCosmetic
+local UnequipCosmetic   = Remotes.UnequipCosmetic
+local ModalState        = ReplicatedStorage.UIEvents.ModalState
+local OpenCosmetics     = ReplicatedStorage.OpenCosmetics
+local ShopItems         = require(ReplicatedStorage.Config.ShopItems)
+local RequestCosmetics  = Remotes.RequestCosmetics
+local ReceiveCosmetics  = Remotes.ReceiveCosmetics
 
 -- UI Refs
 local panel     = script.Parent
@@ -90,20 +91,17 @@ local function initializeCosmetics()
 	end
 
 	hasInitialized = true
-	-- FIX: Reference the correct UIListLayout object by name
 	content.CanvasSize = UDim2.fromOffset(0, content.UIListLayout.AbsoluteContentSize.Y)
 end
 
 local function refreshPanel()
-	local data = GetCosmetics:InvokeServer()
-	local owned = data.OwnedCosmetics.Trails or {}
-	equippedTrail = data.EquippedCosmetics.Trails or ""
-
-	for name, row in pairs(itemRows) do
-		row.Visible = table.find(owned, name) ~= nil
+	-- Hide all rows initially
+	for _, row in pairs(itemRows) do
+		row.Visible = false
 	end
 
-	refreshAllButtonStyles()
+	-- Request latest data from the server
+	RequestCosmetics:FireServer()
 end
 
 --------------------------------------------------------------------
@@ -127,6 +125,21 @@ UserInputService.InputBegan:Connect(function(i, gp)
 end)
 OpenCosmetics.Event:Connect(open)
 
+-- Listen for the server to send back cosmetic data
+ReceiveCosmetics.OnClientEvent:Connect(function(cosmeticsData)
+	if not cosmeticsData or not cosmeticsData.OwnedCosmetics then return end
+
+	local owned = cosmeticsData.OwnedCosmetics.Trails or {}
+	equippedTrail = cosmeticsData.EquippedCosmetics.Trails or ""
+
+	-- Set visibility based on ownership
+	for name, row in pairs(itemRows) do
+		row.Visible = table.find(owned, name) ~= nil
+	end
+
+	refreshAllButtonStyles()
+end)
+
 EquipCosmetic.OnClientEvent:Connect(function(_, tab, name)
 	if tab == "Trails" then
 		equippedTrail = name
@@ -141,4 +154,4 @@ UnequipCosmetic.OnClientEvent:Connect(function(_, tab)
 	end
 end)
 
-if not game:GetService("RunService"):IsRunning() then open() end
+if not RunService:IsRunning() then open() end

@@ -1,22 +1,24 @@
 -------------------------------------------------------------------------------
--- ShopController.lua · (Optimized with Caching & Race-Condition Fix)
--- • FIX: Added a timeout to WaitForChild to prevent infinite yield on ActiveBoosts.
--- • FIX: Added WaitForChild for leaderstats to prevent startup errors.
+-- ShopController.lua · (Asynchronous, No-Freeze Caching & Bug Fix)
+-- • FIX: Uses :FireServer() instead of :Fire() for client-to-server communication.
+-- • Opens instantly and updates button states in the background.
 -------------------------------------------------------------------------------
 local Players            = game:GetService("Players")
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
 local MarketplaceService = game:GetService("MarketplaceService")
 local UserInputService   = game:GetService("UserInputService")
+local RunService         = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 
 -- Config & Remotes
-local ShopItems      = require(ReplicatedStorage.Config.ShopItems)
-local Remotes        = ReplicatedStorage.Remotes
-local BuyItemRF      = Remotes.BuyItem
-local GetCosmetics   = Remotes.GetCosmetics
-local OpenShopEvt    = ReplicatedStorage.OpenShop
-local ModalState     = ReplicatedStorage.UIEvents.ModalState
+local ShopItems         = require(ReplicatedStorage.Config.ShopItems)
+local Remotes           = ReplicatedStorage.Remotes
+local BuyItemRF         = Remotes.BuyItem
+local OpenShopEvt       = ReplicatedStorage.OpenShop
+local ModalState        = ReplicatedStorage.UIEvents.ModalState
+local RequestCosmetics  = Remotes.RequestCosmetics
+local ReceiveCosmetics  = Remotes.ReceiveCosmetics
 
 -- UI References
 local panel      = script.Parent
@@ -56,18 +58,22 @@ local function styleButton(btn: TextButton, state: string, isRobux: boolean)
 	if state == "Buy" then
 		btn.Text = isRobux and "R$" or "BUY"
 		btn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+		btn.Active = true
 		btn.AutoButtonColor = true
 	elseif state == "Active" then
 		btn.Text = "ACTIVE"
 		btn.BackgroundColor3 = Color3.fromRGB(255, 170, 0)
+		btn.Active = false
 		btn.AutoButtonColor = false
 	elseif state == "Owned" then
 		btn.Text = "OWNED"
 		btn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+		btn.Active = false
 		btn.AutoButtonColor = false
 	else
 		btn.Text = "..."
 		btn.BackgroundColor3 = Color3.fromRGB(150, 150, 150)
+		btn.Active = false
 		btn.AutoButtonColor = false
 	end
 end
@@ -138,17 +144,13 @@ local function setTab(tabName: string)
 end
 
 local function refreshButtonStates()
-	local cosmeticsData = GetCosmetics:InvokeServer()
-	if cosmeticsData and cosmeticsData.OwnedCosmetics then
-		local ownedTrails = cosmeticsData.OwnedCosmetics.Trails or {}
-		for _, trailName in ipairs(ownedTrails) do
-			if itemRows.Cosmetics[trailName] then
-				styleButton(itemRows.Cosmetics[trailName].BuyButton, "Owned", false)
-			end
-		end
+	for _, row in pairs(itemRows.Cosmetics) do
+		styleButton(row.BuyButton, "...", false)
 	end
 
-	-- FIX: Wait for the ActiveBoosts folder with a timeout
+	-- FIX: Use :FireServer() here
+	RequestCosmetics:FireServer()
+
 	local activeBoosts = player:WaitForChild("ActiveBoosts", 5)
 	if activeBoosts then
 		for _, boostFlag in ipairs(activeBoosts:GetChildren()) do
@@ -184,9 +186,23 @@ UserInputService.InputBegan:Connect(function(i, gp)
 end)
 OpenShopEvt.Event:Connect(openShop)
 
--- FIX: Wait for leaderstats to exist before connecting
+ReceiveCosmetics.OnClientEvent:Connect(function(cosmeticsData)
+	if not cosmeticsData or not cosmeticsData.OwnedCosmetics then return end
+
+	for _, row in pairs(itemRows.Cosmetics) do
+		styleButton(row.BuyButton, "Buy", false)
+	end
+
+	local ownedTrails = cosmeticsData.OwnedCosmetics.Trails or {}
+	for _, trailName in ipairs(ownedTrails) do
+		if itemRows.Cosmetics[trailName] then
+			styleButton(itemRows.Cosmetics[trailName].BuyButton, "Owned", false)
+		end
+	end
+end)
+
 local leaderstats = player:WaitForChild("leaderstats")
 leaderstats:WaitForChild("Coins").Changed:Connect(updateCoins)
 updateCoins(leaderstats.Coins.Value)
 
-if not game:GetService("RunService"):IsRunning() then openShop() end
+if not RunService:IsRunning() then openShop() end
