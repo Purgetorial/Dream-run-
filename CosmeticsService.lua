@@ -1,101 +1,118 @@
 --------------------------------------------------------------------
--- CosmeticsService.lua
---  · Keeps server-side record of owned & equipped cosmetics
---  · Pushes trail colours to the client
---  · Grants “Lightspeed Trail” automatically to Lightspeed pass owners
+-- CosmeticsService.lua (Asynchronous Update)
+-- • FIX: Replaced RemoteFunction with RemoteEvents to prevent UI freezing.
+-- • The client now requests data and receives it asynchronously.
 --------------------------------------------------------------------
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
-local DataAPI      = require(game.ServerScriptService.PlayerDataManager)
-local TrailColors  = require(ReplicatedStorage.Config.TrailColors)
+-- Service Modules
+local DataAPI      = require(ServerScriptService.PlayerDataManager)
 
---------------------------------------------------------------------  constants
-local LIGHTSPEED_TRAIL = "Lightspeed Trail"
+--------------------------------------------------------------------
+-- Remotes
+--------------------------------------------------------------------
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 
---------------------------------------------------------------------  remotes
-local Rem = ReplicatedStorage:FindFirstChild("Remotes") or Instance.new("Folder", ReplicatedStorage)
-Rem.Name  = "Remotes"
+-- IN: Client asks for its data
+local RequestCosmetics  = Remotes:FindFirstChild("RequestCosmetics") or Instance.new("RemoteEvent", Remotes)
+RequestCosmetics.Name   = "RequestCosmetics"
 
-local GetCosmetics    = Rem:FindFirstChild("GetCosmetics")    or Instance.new("RemoteFunction", Rem)
-GetCosmetics.Name     = "GetCosmetics"
+-- OUT: Server sends data back to the specific client
+local ReceiveCosmetics  = Remotes:FindFirstChild("ReceiveCosmetics") or Instance.new("RemoteEvent", Remotes)
+ReceiveCosmetics.Name   = "ReceiveCosmetics"
 
-local EquipCosmetic   = Rem:FindFirstChild("EquipCosmetic")   or Instance.new("RemoteEvent",   Rem)
-EquipCosmetic.Name    = "EquipCosmetic"
+-- Other remotes handled by this service
+local EquipCosmetic   = Remotes:WaitForChild("EquipCosmetic")
+local UnequipCosmetic = Remotes:WaitForChild("UnequipCosmetic")
+local SetTrailColor   = Remotes:WaitForChild("SetTrailColor")
 
-local UnequipCosmetic = Rem:FindFirstChild("UnequipCosmetic") or Instance.new("RemoteEvent",   Rem)
-UnequipCosmetic.Name  = "UnequipCosmetic"
-
-local SetTrailColor   = Rem:FindFirstChild("SetTrailColor")   or Instance.new("RemoteEvent",   Rem)
-SetTrailColor.Name    = "SetTrailColor"
-
---------------------------------------------------------------------  helpers
+--------------------------------------------------------------------
+-- Helper Functions
+--------------------------------------------------------------------
 local function ensure(tbl, key, default)
 	if tbl[key] == nil then tbl[key] = default end
 	return tbl[key]
 end
 
-local function pushColour(player, trailName)
+local function pushColor(player, trailName)
+	local TrailColors = require(ReplicatedStorage.Config.TrailColors)
 	local seq = TrailColors[trailName or "Default"] or TrailColors.Default
 	SetTrailColor:FireClient(player, seq)
 end
 
---------------------------------------------------------------------  RPC: client asks for owned/equipped lists
-GetCosmetics.OnServerInvoke = function(player)
-	local data = DataAPI.Get(player) or {}
+--------------------------------------------------------------------
+-- Asynchronous Data Provider
+--------------------------------------------------------------------
+RequestCosmetics.OnServerEvent:Connect(function(player)
+	local data = DataAPI.Get(player)
+	if not data then return end
 
-	----------------------------------------------------------------  unlock Lightspeed Trail if pass owned
-	local ownsLS =    (data.Gamepasses and data.Gamepasses.Lightspeed)
-		or player:FindFirstChild("PermanentLightspeed")
-	if ownsLS then
-		data.OwnedCosmetics         = ensure(data, "OwnedCosmetics",         {})
-		data.OwnedCosmetics.Trails  = ensure(data.OwnedCosmetics, "Trails", {})
-		if not table.find(data.OwnedCosmetics.Trails, LIGHTSPEED_TRAIL) then
-			table.insert(data.OwnedCosmetics.Trails, LIGHTSPEED_TRAIL)
+	-- Check for Lightspeed pass ownership
+	local gamepasses = data.Gamepasses or {}
+	if gamepasses.Lightspeed then
+		local cosmetics = ensure(data, "OwnedCosmetics", {})
+		local trails = ensure(cosmetics, "Trails", {})
+		if not table.find(trails, "Lightspeed Trail") then
+			table.insert(trails, "Lightspeed Trail")
+			DataAPI.Set(player, "OwnedCosmetics", cosmetics) -- Mark for saving
 		end
 	end
 
-	return {
-		OwnedCosmetics    = table.clone(data.OwnedCosmetics    or {}),
-		EquippedCosmetics = table.clone(data.EquippedCosmetics or {}),
-	}
-end
+	-- Fire the data back to the requesting client
+	ReceiveCosmetics:FireClient(player, {
+		OwnedCosmetics    = data.OwnedCosmetics or {},
+		EquippedCosmetics = data.EquippedCosmetics or {},
+	})
+end)
 
---------------------------------------------------------------------  equip / unequip from UI
+--------------------------------------------------------------------
+-- Equip / Unequip Logic
+--------------------------------------------------------------------
 EquipCosmetic.OnServerEvent:Connect(function(player, tab, name)
 	if tab ~= "Trails" then return end
-	local data = DataAPI.Get(player); if not data then return end
+	local data = DataAPI.Get(player)
+	if not data then return end
 
-	local owned = ensure(ensure(data,"OwnedCosmetics",{}), "Trails", {})
-	for _,v in ipairs(owned) do
-		if v == name then
-			ensure(data,"EquippedCosmetics",{}).Trails = name
-			DataAPI.Save(player)
-			pushColour(player, name)
-			EquipCosmetic:FireClient(player, tab, name)
-			return
-		end
+	local owned = ensure(ensure(data, "OwnedCosmetics", {}), "Trails", {})
+	if table.find(owned, name) then
+		ensure(data, "EquippedCosmetics", {}).Trails = name
+		DataAPI.Set(player, "EquippedCosmetics", data.EquippedCosmetics) -- Mark for saving
+		pushColor(player, name)
+		EquipCosmetic:FireClient(player, tab, name) -- Echo back for confirmation
 	end
 end)
 
 UnequipCosmetic.OnServerEvent:Connect(function(player, tab)
 	if tab ~= "Trails" then return end
-	local data = DataAPI.Get(player); if not data then return end
-	if data.EquippedCosmetics then data.EquippedCosmetics.Trails = nil end
-	DataAPI.Save(player)
-	pushColour(player, "Default")
+	local data = DataAPI.Get(player)
+	if not data then return end
+
+	if data.EquippedCosmetics then
+		data.EquippedCosmetics.Trails = nil
+		DataAPI.Set(player, "EquippedCosmetics", data.EquippedCosmetics) -- Mark for saving
+	end
+
+	pushColor(player, "Default")
 	UnequipCosmetic:FireClient(player, tab)
 end)
 
---------------------------------------------------------------------  apply colour each respawn
-local function applyTrailOnSpawn(plr)
-	local eq = (DataAPI.Get(plr).EquippedCosmetics or {}).Trails
-	pushColour(plr, eq)
+--------------------------------------------------------------------
+-- Apply Color on Respawn
+--------------------------------------------------------------------
+local function applyTrailOnSpawn(player)
+	local data = DataAPI.Get(player)
+	if data and data.EquippedCosmetics then
+		pushColor(player, data.EquippedCosmetics.Trails)
+	end
 end
 
-Players.PlayerAdded:Connect(function(plr)
-	plr.CharacterAdded:Connect(function() applyTrailOnSpawn(plr) end)
+Players.PlayerAdded:Connect(function(player)
+	if player.Character then
+		applyTrailOnSpawn(player)
+	end
+	player.CharacterAdded:Connect(function()
+		applyTrailOnSpawn(player)
+	end)
 end)
-for _,pl in ipairs(Players:GetPlayers()) do
-	if pl.Character then applyTrailOnSpawn(pl) end
-end

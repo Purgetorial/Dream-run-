@@ -1,4 +1,8 @@
--- LeaderboardService.lua  |  global PB & Prestige leaderboards
+--------------------------------------------------------------------
+-- LeaderboardService.lua  |  global PB & Prestige leaderboards (ModuleScript)
+-- • Converted to a ModuleScript to remove reliance on _G.
+-- • Handles fetching and updating global leaderboard data.
+--------------------------------------------------------------------
 local DataStoreService = game:GetService("DataStoreService")
 local Players          = game:GetService("Players")
 local ReplicatedStorage= game:GetService("ReplicatedStorage")
@@ -13,67 +17,84 @@ Remotes.Name   = "Remotes"
 local RequestLeaderboard = Remotes:FindFirstChild("RequestLeaderboard") or Instance.new("RemoteFunction",Remotes)
 RequestLeaderboard.Name  = "RequestLeaderboard"
 
+-- The main module table we will return
+local LeaderboardService = {}
+
 --------------------------------------------------------------------
--- helpers
+-- Public Functions
 --------------------------------------------------------------------
-local function updateBestTime(player, seconds)
-	if not seconds or seconds <= 0 then return end
+function LeaderboardService.UpdateBestTime(player, seconds)
+	if not (player and seconds and seconds > 0 and seconds ~= math.huge) then return end
 	local key = tostring(player.UserId)
 
-	local ms   = math.floor(seconds * 1000 + 0.5)      -- ? int milliseconds
-	local neg  = -ms                                   -- lower is faster
+	-- We store negative milliseconds so lower (faster) times rank higher
+	local ms   = math.floor(seconds * 1000)
+	local valueToStore  = -ms
 
-	local ok, current = pcall(BestTimeStore.GetAsync, BestTimeStore, key)
-	if ok and (not current or neg < current) then
-		pcall(BestTimeStore.SetAsync, BestTimeStore, key, neg)
+	pcall(function()
+		BestTimeStore:SetAsync(key, valueToStore)
+	end)
+end
+
+function LeaderboardService.UpdatePrestige(player, prestige:number)
+	if not (player and prestige and prestige >= 0) then return end
+	local key = tostring(player.UserId)
+
+	pcall(function()
+		PrestigeStore:SetAsync(key, prestige)
+	end)
+end
+
+--------------------------------------------------------------------
+-- RemoteFunction Implementation
+--------------------------------------------------------------------
+local PAGE_SIZE = 50
+RequestLeaderboard.OnServerInvoke = function(_, boardType: string)
+	boardType = (boardType == "Prestige") and "Prestige" or "BestTime"
+	local store = (boardType == "Prestige") and PrestigeStore or BestTimeStore
+
+	-- For BestTime, ascending is false (higher negative number is better)
+	-- For Prestige, ascending is false (higher prestige is better)
+	local isAscending = false 
+
+	local pages = store:GetSortedAsync(isAscending, PAGE_SIZE)
+	local data = {}
+
+	local success, result = pcall(function()
+		return pages:GetCurrentPage()
+	end)
+
+	if not success then
+		warn("[LeaderboardService] Failed to get page from DataStore: " .. tostring(result))
+		return {} -- Return empty table on failure
 	end
-end
 
-local function updatePrestige(player, prestige:number)
-	if not prestige or prestige < 0 then return end
-	local key = tostring(player.UserId)
+	for rank, entry in ipairs(result) do
+		local uid = tonumber(entry.key)
+		if not uid then continue end
 
-	-- always overwrite if the value changed (higher OR lower)
-	local ok, cur = pcall(PrestigeStore.GetAsync, PrestigeStore, key)
-	if ok and cur == prestige then return end  -- no change
-
-	pcall(PrestigeStore.SetAsync, PrestigeStore, key, prestige)
-end
-
-_G.LeaderboardService = {
-	UpdateBestTime   = updateBestTime,
-	UpdatePrestige   = updatePrestige,
-}
-
---------------------------------------------------------------------
--- RemoteFunction implementation
---------------------------------------------------------------------
-local PAGE = 50
-RequestLeaderboard.OnServerInvoke = function(_, boardType)
-	boardType = boardType or "BestTime"
-	local store = (boardType=="Prestige") and PrestigeStore or BestTimeStore
-	local desc  = false                                   -- high?low
-	local data  = store:GetSortedAsync(desc, PAGE):GetCurrentPage()
-
-	local result = {}
-	for rank, entry in ipairs(data) do
-		local uid  = tonumber(entry.key)
 		local name = "Player"
-		local plr  = Players:GetPlayerByUserId(uid)
-		if plr then name = plr.Name else
-			pcall(function() name = Players:GetNameFromUserIdAsync(uid) end)
-		end
+		local prestigeVal = 0
 
-		local bestSeconds = math.abs(entry.value) / 1000   -- ? convert back
-		local prestigeVal = (boardType=="Prestige")
-			and entry.value
-			or (PrestigeStore:GetAsync(entry.key) or 0)
+		-- Safely get player name
+		local nameSuccess, nameResult = pcall(Players.GetNameFromUserIdAsync, Players, uid)
+		if nameSuccess then name = nameResult end
 
-		table.insert(result, {
+		-- Safely get prestige value
+		local prestigeSuccess, prestigeResult = pcall(PrestigeStore.GetAsync, PrestigeStore, tostring(uid))
+		if prestigeSuccess and prestigeResult then prestigeVal = prestigeResult end
+
+		-- Convert value back to positive seconds for BestTime board
+		local timeValue = (boardType == "BestTime") and (math.abs(entry.value) / 1000) or math.huge
+
+		table.insert(data, {
 			Name      = name,
-			BestTime  = bestSeconds,
+			BestTime  = timeValue,
 			Prestige  = prestigeVal,
 		})
 	end
-	return result
+
+	return data
 end
+
+return LeaderboardService
