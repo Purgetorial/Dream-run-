@@ -1,35 +1,39 @@
 --------------------------------------------------------------------
---  PlayerDataManager.lua  •  Luau version
+--  PlayerDataManager.lua  •  Luau version (Optimized)
+--  • Fixes PB saving issue by removing redundant save calls.
+--  • Adds a robust autosave feature to prevent data loss on crash.
+--  • Centralizes data saving to be more efficient and reliable.
 --------------------------------------------------------------------
 local DataStoreService = game:GetService("DataStoreService")
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
 
-local MAIN_KEY = "PlayerData_v3"
-local store    = DataStoreService:GetDataStore(MAIN_KEY)
+local MAIN_KEY    = "PlayerData_v3"
+local AUTOSAVE_INTERVAL = 60 -- seconds
+local store       = DataStoreService:GetDataStore(MAIN_KEY)
 
 --------------------------------------------------------------------
---  default structure
+--  Default structure
 --------------------------------------------------------------------
 local DEFAULT_DATA = {
 	BestTime          = math.huge,
 	Prestige          = 0,
 	Coins             = 0,
-
 	TotalCoinsEarned  = 0,
 	RunsFinished      = 0,
-
 	OwnedCosmetics    = {},
 	EquippedCosmetics = {},
+	Gamepasses        = {},
 }
 
 --------------------------------------------------------------------
---  in-memory cache
+--  In-memory cache & dirty flag system
 --------------------------------------------------------------------
 local session: {[number]: any} = {}
+local dirty:   {[number]: boolean} = {} -- Tracks players whose data has changed and needs saving
 
 --------------------------------------------------------------------
---  utilities
+--  Utilities
 --------------------------------------------------------------------
 local function deepClone(tbl)
 	local clone = {}
@@ -39,36 +43,58 @@ local function deepClone(tbl)
 	return clone
 end
 
+-- Ensure nested tables exist to prevent errors
+local function ensure(tbl, key, default)
+	if not tbl[key] then tbl[key] = default end
+	return tbl[key]
+end
+
 --------------------------------------------------------------------
---  DataStore wrappers (3 retries)
+--  DataStore wrappers (with retries)
 --------------------------------------------------------------------
 local function loadData(userId: number)
-	for _ = 1, 3 do
+	for i = 1, 3 do
 		local ok, data = pcall(function()
 			return store:GetAsync("ID_" .. userId)
 		end)
 		if ok then
-			return data or deepClone(DEFAULT_DATA)
+			local loadedData = data or deepClone(DEFAULT_DATA)
+			-- Ensure all default keys are present to prevent errors with new features
+			for key, value in pairs(DEFAULT_DATA) do
+				if loadedData[key] == nil then
+					loadedData[key] = value
+				end
+			end
+			return loadedData
 		end
-		task.wait(1)
+		warn(("[DataStore] Load failed for %d (attempt %d). Retrying..."):format(userId, i))
+		task.wait(2)
 	end
+	warn(("[DataStore] CRITICAL: Could not load data for %d after 3 attempts. Using default data."):format(userId))
 	return deepClone(DEFAULT_DATA)
 end
 
-local function saveData(userId: number, data)
-	for _ = 1, 3 do
+local function saveData(userId: number)
+	local data = session[userId]
+	if not (data and dirty[userId]) then return true end -- Only save if data exists and is dirty
+
+	for i = 1, 3 do
 		local ok, err = pcall(function()
 			store:SetAsync("ID_" .. userId, data)
 		end)
-		if ok then return true end
-		warn("[DataStore] Save failed for", userId, err)
-		task.wait(1)
+		if ok then
+			dirty[userId] = nil -- Mark as no longer needing a save
+			return true
+		end
+		warn(("[DataStore] Save failed for %d (attempt %d): %s"):format(userId, i, tostring(err)))
+		task.wait(2)
 	end
+	warn(("[DataStore] CRITICAL: Could not save data for %d after 3 attempts."):format(userId))
 	return false
 end
 
 --------------------------------------------------------------------
---  leaderstats (Prestige | Coins | BestTime)
+--  Leaderstats
 --------------------------------------------------------------------
 local function setupLeaderstats(plr: Player, data)
 	local ls = Instance.new("Folder")
@@ -92,32 +118,44 @@ local function setupLeaderstats(plr: Player, data)
 end
 
 --------------------------------------------------------------------
---  player join / leave
+--  Player join / leave & Autosave
 --------------------------------------------------------------------
 Players.PlayerAdded:Connect(function(plr)
 	local data = loadData(plr.UserId)
 	session[plr.UserId] = data
 	setupLeaderstats(plr, data)
 
-	-- ? keep global board in sync
+	-- Keep global board in sync
 	if _G.LeaderboardService then
 		_G.LeaderboardService.UpdatePrestige(plr, data.Prestige)
+		_G.LeaderboardService.UpdateBestTime(plr, data.BestTime)
 	end
 end)
 
 Players.PlayerRemoving:Connect(function(plr)
-	local data = session[plr.UserId]
-	if data then
-		saveData(plr.UserId, data)
-		session[plr.UserId] = nil
+	saveData(plr.UserId)
+	session[plr.UserId] = nil
+	dirty[plr.UserId] = nil
+end)
+
+-- Autosave loop
+task.spawn(function()
+	while task.wait(AUTOSAVE_INTERVAL) do
+		for userId, _ in pairs(dirty) do
+			if Players:GetPlayerByUserId(userId) then -- Check if player is still in game
+				saveData(userId)
+			end
+		end
 	end
 end)
 
 game:BindToClose(function()
 	if RunService:IsStudio() then return end
-	for _, plr in ipairs(Players:GetPlayers()) do
-		local data = session[plr.UserId]
-		if data then saveData(plr.UserId, data) end
+	-- Save all dirty data one last time before shutdown
+	for userId, _ in pairs(dirty) do
+		if Players:GetPlayerByUserId(userId) then
+			saveData(userId)
+		end
 	end
 end)
 
@@ -130,23 +168,27 @@ function DataAPI.Get(plr: Player)
 	return session[plr.UserId]
 end
 
+-- This function is no longer needed, saving is handled automatically.
+-- It's kept here for compatibility in case other scripts call it, but it does nothing.
 function DataAPI.Save(plr: Player)
-	return saveData(plr.UserId, session[plr.UserId])
+	warn("DataAPI.Save is deprecated and should be removed. Saving is automatic.")
+	-- Intentionally left blank
 end
 
-function DataAPI.Set(plr: Player, key: string, value)
+function DataAPI.Set(plr: Player, key: string, value: any)
 	local d = session[plr.UserId]
-	if d then
+	if d and d[key] ~= value then
 		d[key] = value
-		DataAPI.Save(plr)
+		dirty[plr.UserId] = true -- Mark data as changed
 	end
 end
 
--- increment helpers ------------------------------------------------
+-- Increment helpers
 function DataAPI.AddCoins(plr: Player, amount: number)
 	local d = session[plr.UserId] ; if not d then return end
 	d.Coins            = (d.Coins or 0) + amount
 	d.TotalCoinsEarned = (d.TotalCoinsEarned or 0) + amount
+	dirty[plr.UserId] = true -- Mark data as changed
 
 	local ls = plr:FindFirstChild("leaderstats")
 	if ls and ls:FindFirstChild("Coins") then
@@ -158,49 +200,39 @@ function DataAPI.IncrementRuns(plr: Player)
 	local d = session[plr.UserId]
 	if not d then return end
 	d.RunsFinished = (d.RunsFinished or 0) + 1
-	DataAPI.Save(plr)            -- <-- add this line
+	dirty[plr.UserId] = true -- Mark data as changed
 end
 
-
---------------------------------------------------------------------
--- Best-time helper  (ONLY block shown changed; rest of file same)
---------------------------------------------------------------------
+-- Best-time helper
 function DataAPI.UpdateBestTime(plr: Player, newTime: number)
 	local d = session[plr.UserId]; if not d then return end
 	if newTime < (d.BestTime or math.huge) then
 		d.BestTime = newTime
+		dirty[plr.UserId] = true -- Mark data as changed
 
-		-- live leaderstat update
+		-- Live leaderstat update
 		local ls = plr:FindFirstChild("leaderstats")
 		if ls and ls:FindFirstChild("BestTime") then
 			ls.BestTime.Value = newTime
 		end
 
-		-- ? push to global leaderboard service (if present)
+		-- Push to global leaderboard service (if present)
 		if _G.LeaderboardService and _G.LeaderboardService.UpdateBestTime then
 			_G.LeaderboardService.UpdateBestTime(plr, newTime)
 		end
-
-		DataAPI.Save(plr)
 	end
 end
 
-
---------------------------------------------------------------------
---  Stats helper
---------------------------------------------------------------------
---------------------------------------------------------------------
+-- Stats helper
 function DataAPI.GetStats(plr: Player)
-	local d = session[plr.UserId] or DEFAULT_DATA
+	local d = session[plr.UserId] or deepClone(DEFAULT_DATA)
 	return {
 		Prestige     = d.Prestige,
 		BestTime     = d.BestTime,
-		Coins        = d.Coins,            -- NEW: current wallet
+		Coins        = d.Coins,
 		TotalCoins   = d.TotalCoinsEarned,
 		RunsFinished = d.RunsFinished,
 	}
 end
---------------------------------------------------------------------
-
 
 return DataAPI
