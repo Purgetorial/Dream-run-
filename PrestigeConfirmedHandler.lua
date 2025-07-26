@@ -1,74 +1,48 @@
 --------------------------------------------------------------------
--- PrestigeConfirmedHandler.lua
---  • Handles “Prestige” button presses
---  • Deducts coins, increments Prestige, resets run-stats
---  • Fires PrestigeConfirmed client event on success / failure
+-- PrestigeConfirmedHandler.lua (Updated with Anti-Exploit)
+-- • Calls the new AntiExploitService to validate requests.
 --------------------------------------------------------------------
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players           = game:GetService("Players")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local Players             = game:GetService("Players")
+local ServerScriptService = game:GetService("ServerScriptService")
 
-local Remotes = ReplicatedStorage:FindFirstChild("Remotes")
-if not Remotes then
-	Remotes = Instance.new("Folder", ReplicatedStorage)
-	Remotes.Name = "Remotes"
-end
+-- Service Modules
+local DataAPI            = require(ServerScriptService.PlayerDataManager)
+local AntiExploitService = require(ServerScriptService.AntiExploitService)
 
---------------------------------------------------------------------  -- ensure RemoteEvents exist
-local RequestPrestige  = Remotes:FindFirstChild("RequestPrestige")
-	or Instance.new("RemoteEvent", Remotes)
-RequestPrestige.Name   = "RequestPrestige"
+-- Remotes
+local Remotes           = ReplicatedStorage:WaitForChild("Remotes")
+local RequestPrestige   = Remotes:WaitForChild("RequestPrestige")
+local PrestigeConfirmed = Remotes:WaitForChild("PrestigeConfirmed")
+local TeleportToLobby   = ReplicatedStorage:WaitForChild("TeleportToLobby")
 
-local PrestigeConfirmed = Remotes:FindFirstChild("PrestigeConfirmed")
-	or Instance.new("RemoteEvent", Remotes)
-PrestigeConfirmed.Name  = "PrestigeConfirmed"
+--------------------------------------------------------------------
+-- Server-side handler
+--------------------------------------------------------------------
+RequestPrestige.OnServerEvent:Connect(function(player)
+	-- Call the validator first
+	if not AntiExploitService.Validate(player, "RequestPrestige") then return end
 
---[[ ADD THIS: Ensure TeleportToLobby remote exists so we can fire it ]]
-local TeleportToLobby = ReplicatedStorage:FindFirstChild("TeleportToLobby")
-	or Instance.new("RemoteEvent", ReplicatedStorage)
-TeleportToLobby.Name  = "TeleportToLobby"
-
-
---------------------------------------------------------------------  -- dependencies
-local DataAPI = require(game.ServerScriptService.PlayerDataManager)
-
---------------------------------------------------------------------  -- server-side handler
-RequestPrestige.OnServerEvent:Connect(function(plr)
-	local d = DataAPI.Get(plr)
+	local d = DataAPI.Get(player)
 	if not d then
-		PrestigeConfirmed:FireClient(plr, false, "Data not found")
+		PrestigeConfirmed:FireClient(player, false, "Data not found")
 		return
 	end
 
-	--[[
-		REMOVED THE COST CHECK: The original code had a cost check here
-		that we are removing to make prestiging free.
-	]]
+	-- Perform prestige
+	d.Prestige += 1
+	d.BestTime = math.huge
+	DataAPI.Set(player, "Prestige", d.Prestige) -- Use the Set helper to mark as dirty
+	DataAPI.Set(player, "BestTime", d.BestTime)
 
-	-- perform prestige
-	d.Prestige     += 1
-	d.BestTime      = math.huge
-	d.RunsFinished  = 0
-	-- optional: reset other per-run stats here
-
-	DataAPI.Save(plr)
-
-	-- You can remove this function if you want, or keep it for leaderstat syncing
-	local function syncLeaderstats(plr, data)
-		local ls = plr:FindFirstChild("leaderstats")
-		if not ls then return end
-		if ls:FindFirstChild("Prestige") then
-			ls.Prestige.Value = data.Prestige
-		end
-		if ls:FindFirstChild("Coins") then
-			ls.Coins.Value = data.Coins
-		end
+	-- Sync leaderstats
+	local ls = player:FindFirstChild("leaderstats")
+	if ls then
+		if ls:FindFirstChild("Prestige") then ls.Prestige.Value = d.Prestige end
+		if ls:FindFirstChild("BestTime") then ls.BestTime.Value = d.BestTime end
 	end
 
-	syncLeaderstats(plr, d)
-
-	-- tell client we succeeded & new prestige level
-	PrestigeConfirmed:FireClient(plr, true, d.Prestige)
-
-	--[[ ADD THIS: Teleport the player back to the lobby after prestiging ]]
-	TeleportToLobby:FireClient(plr)
+	-- Tell client we succeeded and teleport them
+	PrestigeConfirmed:FireClient(player, true, d.Prestige)
+	TeleportToLobby:FireClient(player)
 end)
