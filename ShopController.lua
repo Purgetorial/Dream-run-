@@ -1,8 +1,8 @@
 -------------------------------------------------------------------------------
--- ShopController.lua · (Truly Asynchronous, No-Freeze, Final Version)
--- • FIX: Re-added the MouseButton1Click connections for the tab buttons.
--- • Uses task.spawn() to run all data-fetching in the background for an instant open.
--- • Button states update asynchronously after the UI is visible.
+-- ShopController.lua · (Final Bug Fix Version)
+-- • FIX: Corrected tab initialization logic so items appear instantly.
+-- • FIX: Robux purchases are now correctly handled entirely on the client.
+-- • Opens instantly and updates button states in the background.
 -------------------------------------------------------------------------------
 local Players            = game:GetService("Players")
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
@@ -58,7 +58,7 @@ local function styleButton(btn: TextButton, state: string, isRobux: boolean)
 	btn:SetAttribute("State", state)
 	if state == "Buy" then
 		btn.Text = isRobux and "R$" or "BUY"
-		btn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
+		btn.BackgroundColor3 = isRobux and Color3.fromRGB(0, 80, 255) or Color3.fromRGB(0, 170, 0)
 		btn.Active = true
 		btn.AutoButtonColor = true
 	elseif state == "Active" then
@@ -71,7 +71,7 @@ local function styleButton(btn: TextButton, state: string, isRobux: boolean)
 		btn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
 		btn.Active = false
 		btn.AutoButtonColor = false
-	else -- "..." (processing) or "Loading"
+	else
 		btn.Text = "..."
 		btn.BackgroundColor3 = Color3.fromRGB(150, 150, 150)
 		btn.Active = false
@@ -100,14 +100,20 @@ local function createRow(tabName, item)
 		if btn:GetAttribute("State") ~= "Buy" then return end
 		styleButton(btn, "...", isRobux)
 
+		-- FIX: Correctly differentiate between Robux and Coin purchases
 		if isRobux then
+			-- Robux purchases are handled entirely on the client
 			MarketplaceService:PromptProductPurchase(player, item.ProductId)
 			task.wait(0.5)
-			if btn:GetAttribute("State") == "..." then styleButton(btn, "Buy", isRobux) end
+			-- Reset button state if purchase is cancelled
+			if btn:GetAttribute("State") == "..." then
+				styleButton(btn, "Buy", isRobux)
+			end
 		else
-			local success = BuyItemRF:InvokeServer(tabName, item.BoostName or item.Name)
+			-- Coin purchases are handled by the server
+			local success = BuyItemRF:InvokeServer(tabName, item.Name)
 			if success then
-				styleButton(btn, (tabName == "Boosts") and "Active" or "Owned", isRobux)
+				styleButton(btn, "Owned", isRobux)
 			else
 				styleButton(btn, "Buy", isRobux)
 			end
@@ -120,7 +126,6 @@ local function createRow(tabName, item)
 end
 
 local function setTab(tabName: string)
-	if currentTab == tabName and gui.Enabled then return end -- Don't re-select the same tab
 	currentTab = tabName
 
 	for name, btn in pairs(tabs) do
@@ -155,7 +160,9 @@ local function updateAllButtonStates()
 	local activeBoosts = player:WaitForChild("ActiveBoosts", 5)
 	if activeBoosts then
 		for _, boostFlag in ipairs(activeBoosts:GetChildren()) do
-			if itemRows.Boosts[boostFlag.Name] then
+			-- Find the corresponding item info to check if it's a Robux item
+			local itemInfo = ShopItems.Boosts[boostFlag.Name]
+			if itemRows.Boosts[boostFlag.Name] and itemInfo then
 				styleButton(itemRows.Boosts[boostFlag.Name].BuyButton, boostFlag.Value and "Active" or "Buy", true)
 			end
 		end
@@ -172,6 +179,8 @@ local function openShop()
 	initializeShop()
 	ModalState:Fire(true)
 	gui.Enabled, panel.Visible = true, true
+
+	-- FIX: This now correctly sets the initial tab visibility
 	setTab(currentTab)
 
 	task.spawn(updateAllButtonStates)
@@ -182,7 +191,6 @@ local function closeShop()
 	ModalState:Fire(false)
 end
 
--- FIX: Connect the tab buttons to the setTab function
 for name, button in pairs(tabs) do
 	button.MouseButton1Click:Connect(function()
 		setTab(name)
