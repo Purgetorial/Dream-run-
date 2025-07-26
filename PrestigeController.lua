@@ -1,99 +1,98 @@
 --------------------------------------------------------------------
--- PrestigeController.lua
+-- PrestigeController.lua (Optimized)
+-- • Updates the UI in real-time using leaderstat connections.
+-- • Provides instant feedback when the prestige button is clicked.
 --------------------------------------------------------------------
------------------------------- Services ----------------------------
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UIS               = game:GetService("UserInputService")
+local UserInputService  = game:GetService("UserInputService")
 
------------------------------- UIEvents ---------------------------
-local ModalState = ReplicatedStorage.UIEvents:WaitForChild("ModalState")
+local player = Players.LocalPlayer
 
------------------------------- GUI refs ---------------------------
-local gui            = script.Parent                -- PrestigeGui
-local panel          = gui.PrestigePanel
-local infoBox        = panel.InfoBox
-local levelLabel     = infoBox.PrestigeLevelLabel
-local bonusLabel     = infoBox.PrestigeBonusLabel
-local reqLabel       = panel.RequirementLabel
-local warnLabel      = panel.WarningLabel
-local prestigeButton = panel.PrestigeButton
+-- UI & Remotes
+local ModalState        = ReplicatedStorage.UIEvents:WaitForChild("ModalState")
+local gui               = script.Parent
+local panel             = gui.PrestigePanel
+local levelLabel        = panel.InfoBox.PrestigeLevelLabel
+local bonusLabel        = panel.InfoBox.PrestigeBonusLabel
+local prestigeButton    = panel.PrestigeButton
+local Remotes           = ReplicatedStorage.Remotes
+local RequestPrestige   = Remotes.RequestPrestige
+local PrestigeConfirmed = Remotes.PrestigeConfirmed
+local OpenPrestigeEvt   = ReplicatedStorage:WaitForChild("OpenPrestige")
 
------------------------------- Remotes ----------------------------
-local Remotes          = ReplicatedStorage.Remotes
-local RequestPrestige  = Remotes.RequestPrestige
-local PrestigeConfirmed= Remotes.PrestigeConfirmed
-local OpenPrestigeEvt  = ReplicatedStorage.OpenPrestige  -- fired from RunService
 --------------------------------------------------------------------
-local player      = Players.LocalPlayer
-local awaiting    = false
-local BONUS_PCT   = 15
+-- State & Config
+--------------------------------------------------------------------
+local isAwaitingResponse = false
+local COIN_BONUS_PER_LEVEL = 15 -- +15% per level
 
------------------------------- UI update --------------------------
-local function updateUI()
-	local prestige = 0
-	local ls = player:FindFirstChild("leaderstats")
-	if ls and ls:FindFirstChild("Prestige") then
-		prestige = ls.Prestige.Value
-	end
+--------------------------------------------------------------------
+-- UI Update Functions
+--------------------------------------------------------------------
+local function updateLabels(prestigeLevel: number)
+	levelLabel.Text = "Prestige Level: " .. tostring(prestigeLevel)
+	bonusLabel.Text = string.format("Coin Bonus: +%d%%", prestigeLevel * COIN_BONUS_PER_LEVEL)
+end
 
-	levelLabel.Text = "Prestige Level: "..tostring(prestige)
-	bonusLabel.Text = string.format("+%d%% Coins", prestige * BONUS_PCT)
-	reqLabel.Text   = "You finished your run!"
-	warnLabel.Text  = "Prestiging grants a permanent coin bonus!"
-
-	if awaiting then
-		prestigeButton.Text              = "Prestiging..."
-		prestigeButton.Active            = false
-		prestigeButton.AutoButtonColor   = false
+local function updateButtonState()
+	if isAwaitingResponse then
+		prestigeButton.Text = "PRESTIGING..."
+		prestigeButton.AutoButtonColor = false
+		prestigeButton.BackgroundColor3 = Color3.fromRGB(150, 150, 150)
 	else
-		prestigeButton.Text              = "Prestige?"
-		prestigeButton.Active            = true
-		prestigeButton.AutoButtonColor   = true
+		prestigeButton.Text = "PRESTIGE"
+		prestigeButton.AutoButtonColor = true
+		prestigeButton.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
 	end
 end
 
------------------------------- Open / Close -----------------------
+--------------------------------------------------------------------
+-- Open / Close Logic
+--------------------------------------------------------------------
 local function open()
-	awaiting = false
-	updateUI()
-	gui.Enabled = true
-	panel.Visible = true
-	ModalState:Fire(true)              -- lock Main-Menu
+	isAwaitingResponse = false
+	updateButtonState()
+	gui.Enabled, panel.Visible = true, true
+	ModalState:Fire(true)
 end
 
 local function close()
-	gui.Enabled = false
-	panel.Visible = false
-	ModalState:Fire(false)             -- unlock Main-Menu
+	gui.Enabled, panel.Visible = false, false
+	ModalState:Fire(false)
 end
-
 
 OpenPrestigeEvt.OnClientEvent:Connect(open)
 
------------------------------- Button click -----------------------
+--------------------------------------------------------------------
+-- Event Connections
+--------------------------------------------------------------------
 prestigeButton.MouseButton1Click:Connect(function()
-	if awaiting or not prestigeButton.Active then return end
-	awaiting = true
-	updateUI()
+	if isAwaitingResponse then return end
+	isAwaitingResponse = true
+	updateButtonState()
 	RequestPrestige:FireServer()
 end)
 
------------------------------- Server confirmation ---------------
-if PrestigeConfirmed then
-	PrestigeConfirmed.OnClientEvent:Connect(function(newLevel)
-		awaiting = false
-		updateUI()
-		close()                             -- panel auto-closes
-	end)
+PrestigeConfirmed.OnClientEvent:Connect(function(success: boolean)
+	isAwaitingResponse = false
+	updateButtonState()
+	if success then
+		-- The panel will auto-close after a successful prestige
+		close()
+	end
+end)
+
+-- Connect to leaderstats to keep the UI live
+local function connectToLeaderstats()
+	local ls = player:WaitForChild("leaderstats")
+	local prestigeValue = ls:WaitForChild("Prestige")
+
+	-- Initial update
+	updateLabels(prestigeValue.Value)
+
+	-- Listen for changes
+	prestigeValue.Changed:Connect(updateLabels)
 end
 
------------------------------- Leaderstat watchers ----------------
-local function hookStats()
-	local stats = player:WaitForChild("leaderstats")
-	stats.ChildAdded:Connect(updateUI)
-	stats.ChildRemoved:Connect(updateUI)
-	for _, s in ipairs(stats:GetChildren()) do s.Changed:Connect(updateUI) end
-end
-if player:FindFirstChild("leaderstats") then hookStats()
-else player.ChildAdded:Connect(function(c) if c.Name=="leaderstats" then hookStats() end end) end
+connectToLeaderstats()

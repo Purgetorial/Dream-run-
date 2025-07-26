@@ -1,8 +1,8 @@
 --------------------------------------------------------------------
--- StatsController.lua (Optimized)
+-- StatsController.lua (Optimized & Bug-Fixed)
+-- • FIX: Removed an invalid function call that was causing a warning.
 -- • Now updates all stats (PB, Coins, Prestige) in real-time.
 -- • Fixes the active boost timer to provide an accurate live countdown.
--- • Reduces server calls and improves UI responsiveness.
 --------------------------------------------------------------------
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -73,12 +73,16 @@ local function updateBoosts()
 	end
 end
 
+-- Forward declare the close function so it can be referenced
+local close 
+
 local function watchStats()
 	-- Disconnect any old connections to prevent memory leaks
 	for _, conn in pairs(connections) do conn:Disconnect() end
 	table.clear(connections)
 
 	local ls = player:WaitForChild("leaderstats")
+	if not ls then close() return end
 
 	-- Connect to leaderstat changes
 	table.insert(connections, ls.Coins.Changed:Connect(function(v) rowsByKey["Coins"].Text = tostring(v) end))
@@ -96,13 +100,18 @@ local function open()
 	ModalState:Fire(true)
 	gui.Enabled, panel.Visible = true, true
 
-	-- Fetch the initial data from the server
 	local stats = GetStatsRF:InvokeServer()
-	if not stats then close(); return end
+	if not stats then
+		-- The stats werent loaded, we should close the panel.
+		-- We can't call close() directly here because it may not be defined yet.
+		-- Instead, we can just disable the GUI.
+		gui.Enabled, panel.Visible = false, false
+		ModalState:Fire(false)
+		return
+	end
 
 	clearRows()
 
-	-- Create static and leaderstat-driven rows
 	local ord = 1
 	createRow("Prestige", stats.Prestige, ord); ord += 1
 	createRow("Personal Best", fmtTime(stats.BestTime), ord); ord += 1
@@ -110,7 +119,6 @@ local function open()
 	createRow("Lifetime Coins", stats.TotalCoins, ord); ord += 1
 	createRow("Runs Finished", stats.RunsFinished, ord); ord += 1
 
-	-- Create rows for any active boosts
 	local boostsFolder = player:WaitForChild("ActiveBoosts")
 	for _, boostFlag in ipairs(boostsFolder:GetChildren()) do
 		if boostFlag.Value and boostFlag:IsA("BoolValue") then
@@ -129,7 +137,7 @@ local function open()
 	watchStats()
 end
 
-local function close()
+close = function()
 	for _, conn in pairs(connections) do conn:Disconnect() end
 	table.clear(connections)
 
@@ -145,5 +153,4 @@ UserInputService.InputBegan:Connect(function(inp, gp)
 end)
 OpenStatsEvt.Event:Connect(open)
 
--- For Studio previewing
 if not RunService:IsRunning() then open() end
