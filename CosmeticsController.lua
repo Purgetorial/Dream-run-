@@ -1,8 +1,8 @@
 --------------------------------------------------------------------
--- CosmeticsController.lua | Trails list + equip / recolor UX (Optimized)
+-- CosmeticsController.lua | (Optimized & Bug Fix)
+-- • FIX: Correctly references "UIListLayout" instead of the non-existent "UILayout".
 -- • Implements UI caching to eliminate lag when opening the menu.
 -- • Simplifies state management for equipping/unequipping trails.
--- • Fetches cosmetic data more efficiently.
 --------------------------------------------------------------------
 local Players            = game:GetService("Players")
 local ReplicatedStorage  = game:GetService("ReplicatedStorage")
@@ -31,7 +31,7 @@ local closeBtn  = panel.CloseButton
 --------------------------------------------------------------------
 local hasInitialized = false
 local equippedTrail = ""
-local itemRows = {} -- Cache for UI rows [trailName] = row
+local itemRows = {}
 
 --------------------------------------------------------------------
 -- Helper Functions
@@ -48,7 +48,6 @@ local function styleButton(btn: TextButton, isEquipped: boolean)
 	end
 end
 
--- Refreshes the state of all buttons in the list
 local function refreshAllButtonStyles()
 	for trailName, row in pairs(itemRows) do
 		styleButton(row.EquipButton, trailName == equippedTrail)
@@ -67,19 +66,15 @@ local function createRow(item)
 
 	local btn = row.EquipButton
 	btn.MouseButton1Click:Connect(function()
-		-- Prevent spamming
 		if not btn.AutoButtonColor then return end
 
 		if equippedTrail == item.Name then
-			-- Unequip current trail
 			UnequipCosmetic:FireServer("Trails")
 			equippedTrail = ""
 		else
-			-- Equip new trail
 			EquipCosmetic:FireServer("Trails", item.Name)
 			equippedTrail = item.Name
 		end
-		-- Immediately update UI for responsiveness
 		refreshAllButtonStyles()
 	end)
 
@@ -90,13 +85,13 @@ end
 local function initializeCosmetics()
 	if hasInitialized then return end
 
-	-- Create rows for all cosmetic items once
 	for _, itemData in ipairs(ShopItems.Cosmetics) do
 		createRow(itemData)
 	end
 
 	hasInitialized = true
-	content.CanvasSize = UDim2.fromOffset(0, content.UILayout.AbsoluteContentSize.Y)
+	-- FIX: Reference the correct UIListLayout object by name
+	content.CanvasSize = UDim2.fromOffset(0, content.UIListLayout.AbsoluteContentSize.Y)
 end
 
 local function refreshPanel()
@@ -104,7 +99,6 @@ local function refreshPanel()
 	local owned = data.OwnedCosmetics.Trails or {}
 	equippedTrail = data.EquippedCosmetics.Trails or ""
 
-	-- Set visibility based on ownership
 	for name, row in pairs(itemRows) do
 		row.Visible = table.find(owned, name) ~= nil
 	end
@@ -133,7 +127,6 @@ UserInputService.InputBegan:Connect(function(i, gp)
 end)
 OpenCosmetics.Event:Connect(open)
 
--- Server echo handlers to confirm equip/unequip
 EquipCosmetic.OnClientEvent:Connect(function(_, tab, name)
 	if tab == "Trails" then
 		equippedTrail = name
@@ -148,5 +141,4 @@ UnequipCosmetic.OnClientEvent:Connect(function(_, tab)
 	end
 end)
 
--- For Studio previewing
 if not game:GetService("RunService"):IsRunning() then open() end

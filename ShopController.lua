@@ -1,7 +1,7 @@
 -------------------------------------------------------------------------------
--- ShopController.lua · (Optimized with UI Caching)
--- • Implements a UI caching system to prevent recreating item rows.
--- • Drastically improves performance and responsiveness when opening or switching tabs.
+-- ShopController.lua · (Optimized with UI Caching & Bug Fix)
+-- • FIX: Correctly references "UIListLayout" instead of the non-existent "UILayout".
+-- • Implements a UI caching system for performance.
 -- • Uses direct leaderstat connections for live coin updates.
 -------------------------------------------------------------------------------
 local Players            = game:GetService("Players")
@@ -39,7 +39,7 @@ local SELECTED_COLOR   = Color3.fromRGB(0, 180, 255)
 local UNSELECTED_COLOR = Color3.fromRGB(0, 110, 185)
 local currentTab = "Boosts"
 local hasInitialized = false
-local itemRows = { Boosts = {}, Cosmetics = {}, Robux = {} } -- Cache for UI rows
+local itemRows = { Boosts = {}, Cosmetics = {}, Robux = {} }
 
 -------------------------------------------------------------------------------
 -- Helper Functions
@@ -66,7 +66,7 @@ local function styleButton(btn: TextButton, state: string, isRobux: boolean)
 		btn.Text = "OWNED"
 		btn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
 		btn.AutoButtonColor = false
-	else -- "..." (processing)
+	else
 		btn.Text = "..."
 		btn.BackgroundColor3 = Color3.fromRGB(150, 150, 150)
 		btn.AutoButtonColor = false
@@ -86,7 +86,7 @@ local function createRow(tabName, item)
 	local isRobux = item.ProductId ~= nil
 	row.PriceLabel.Visible = not isRobux and item.Price and item.Price > 0
 	if row.PriceLabel.Visible then
-		row.PriceLabel.Text = "? " .. comma(item.Price) -- Using a coin icon
+		row.PriceLabel.Text = "? " .. comma(item.Price)
 	end
 
 	local btn = row.BuyButton
@@ -96,7 +96,7 @@ local function createRow(tabName, item)
 
 		if isRobux then
 			MarketplaceService:PromptProductPurchase(player, item.ProductId)
-			task.wait(0.5) -- Give time for purchase prompt to process
+			task.wait(0.5)
 			if btn:GetAttribute("State") == "..." then styleButton(btn, "Buy", isRobux) end
 		else
 			local success = BuyItemRF:InvokeServer(tabName, item.BoostName or item.Name)
@@ -116,24 +116,22 @@ end
 local function initializeShop()
 	if hasInitialized then return end
 
-	-- Create all rows for all tabs at once
 	for _, item in ipairs(ShopItems.Boosts) do createRow("Boosts", item) end
 	for _, item in ipairs(ShopItems.Cosmetics) do createRow("Cosmetics", item) end
 	for _, item in ipairs(ShopItems.Robux) do createRow("Robux", item) end
 
 	hasInitialized = true
-	content.CanvasSize = UDim2.fromOffset(0, content.UILayout.AbsoluteContentSize.Y)
+	-- FIX: Reference the correct UIListLayout object by name
+	content.CanvasSize = UDim2.fromOffset(0, content.UIListLayout.AbsoluteContentSize.Y)
 end
 
 local function setTab(tabName: string)
 	currentTab = tabName
 
-	-- Update tab button colors
 	for name, btn in pairs(tabs) do
 		btn.BackgroundColor3 = (name == tabName) and SELECTED_COLOR or UNSELECTED_COLOR
 	end
 
-	-- Update row visibility based on the selected tab
 	for tab, rows in pairs(itemRows) do
 		for _, row in pairs(rows) do
 			row.Visible = (tab == tabName)
@@ -142,7 +140,6 @@ local function setTab(tabName: string)
 end
 
 local function refreshButtonStates()
-	-- Refresh cosmetics
 	local cosmeticsData = GetCosmetics:InvokeServer()
 	local ownedTrails = cosmeticsData.OwnedCosmetics.Trails or {}
 	for _, trailName in ipairs(ownedTrails) do
@@ -151,14 +148,12 @@ local function refreshButtonStates()
 		end
 	end
 
-	-- Refresh boosts
 	local activeBoosts = player:WaitForChild("ActiveBoosts")
 	for _, boostFlag in ipairs(activeBoosts:GetChildren()) do
 		if itemRows.Boosts[boostFlag.Name] then
 			styleButton(itemRows.Boosts[boostFlag.Name].BuyButton, boostFlag.Value and "Active" or "Buy", true)
 		end
 	end
-	-- Specifically check for Lightspeed gamepass
 	if player:FindFirstChild("PermanentLightspeed") and itemRows.Boosts["Lightspeed"] then
 		styleButton(itemRows.Boosts["Lightspeed"].BuyButton, "Owned", true)
 	end
@@ -186,9 +181,7 @@ UserInputService.InputBegan:Connect(function(i, gp)
 end)
 OpenShopEvt.Event:Connect(openShop)
 
--- Live coin counter connection
 player:WaitForChild("leaderstats"):WaitForChild("Coins").Changed:Connect(updateCoins)
 updateCoins(player.leaderstats.Coins.Value)
 
--- For Studio previewing
 if not game:GetService("RunService"):IsRunning() then openShop() end
