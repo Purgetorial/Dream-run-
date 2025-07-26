@@ -60,7 +60,8 @@ CoinCollected.OnServerEvent:Connect(function(player, coinIndex, coinPos)
 
 	-- Prestige & boost multipliers
 	local data     = DataAPI.Get(player)
-	local prestige = data and (data.Prestige or 0) or 0
+	-- BUG FIX: Ensure data exists before accessing prestige
+	local prestige = (data and data.Prestige) or 0
 	local boosts   = player:FindFirstChild("ActiveBoosts")
 
 	local double   = boosts and boosts:FindFirstChild("DoubleCoins")
