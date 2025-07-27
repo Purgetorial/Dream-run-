@@ -53,6 +53,13 @@ local function attachFX(part: BasePart)
 			local tr       = prefab:Clone()
 			tr.Attachment0 = a0
 			tr.Attachment1 = a1
+			-- ?? BUG FIX: Trails were invisible because their Transparency was not set.
+			-- This ensures they have a visible gradient when enabled.
+			tr.Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0),
+				NumberSequenceKeypoint.new(0.75, 0.8),
+				NumberSequenceKeypoint.new(1, 1)
+			})
 			tr.Enabled     = false
 			tr.Parent      = part
 		end
@@ -63,7 +70,7 @@ local function ensureAllParts(char: Model)
 	if attachmentsDone == char then return end
 	for _, obj in ipairs(char:GetDescendants()) do
 		if obj:IsA("BasePart") and obj.Name ~= "HumanoidRootPart" then
-			attachFX(obj)
+			task.spawn(attachFX, obj)
 		end
 	end
 	attachmentsDone = char
@@ -97,9 +104,9 @@ end)
 -- Recolour support (unchanged)
 --------------------------------------------------------------------
 local function recolor(seq)
-	for _, tr in ipairs(workspace:GetDescendants()) do
-		if tr:IsA("Trail") and (tr.Name=="TrailInner" or tr.Name=="TrailOuter") then
-			tr.Color = seq
+	for _, descendant in ipairs(player.Character:GetDescendants()) do
+		if descendant:IsA("Trail") and (descendant.Name=="TrailInner" or descendant.Name=="TrailOuter") then
+			descendant.Color = seq
 		end
 	end
 end
