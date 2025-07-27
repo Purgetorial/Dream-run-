@@ -1,8 +1,8 @@
 --------------------------------------------------------------------
--- RunFXController.lua • State-based effects controller
--- • UPDATE: Preloads sounds to prevent audio gaps when starting to run.
--- • UPDATE: Replaces sonic boom with a new, louder electric burst sound.
--- • UPDATE: Adjusts volumes for better audio mixing.
+-- RunFXController.lua ? State-based effects controller
+-- ? UPDATE: Preloads sounds to prevent audio gaps when starting to run.
+-- ? UPDATE: Replaces sonic boom with a new, louder electric burst sound.
+-- ? UPDATE: Adjusts volumes for better audio mixing.
 --------------------------------------------------------------------
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -34,7 +34,7 @@ local ElectricBurstSample = RunFXAssets:WaitForChild("ElectricBurst")
 local WindLoopPrefab   = RunFXAssets:WaitForChild("RunningWind")
 
 -- UI Stamina Bar
-local StaminaBar = player:WaitForChild("PlayerGui"):WaitForChild("HUDGui"):WaitForChild("StaminaBar"):WaitForChild("Bar")
+local StaminaBar = player:WaitForChild("PlayerGui"):WaitForChild("HUDGui"):WaitForChild("StaminaBar")
 
 --------------------------
 -- State & Configuration
@@ -59,8 +59,8 @@ local electricSoundCoroutine
 -- Helper Functions
 --------------------------
 local function setStaminaBar(percentage)
-	if StaminaBar and StaminaBar:FindFirstChild("Fill") then
-		StaminaBar.Fill.Size = UDim2.fromScale(math.clamp(percentage, 0, 1), 1)
+	if StaminaBar and StaminaBar:FindFirstChild("Bar") then
+		StaminaBar.Bar.Size = UDim2.fromScale(math.clamp(percentage, 0, 1), 1)
 	end
 end
 
